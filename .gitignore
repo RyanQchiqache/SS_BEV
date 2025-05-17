@@ -1,0 +1,24 @@
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Virtual environment
+my_venv/
+env/
+
+# Model checkpoints
+checkpoints/
+
+# Dataset
+SS_data/
+
+# PyCharm
+.idea/
+
+# Logs
+*.log
+logs/
+
+# Output files
+outputs/
