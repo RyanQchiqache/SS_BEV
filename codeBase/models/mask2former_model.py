@@ -1,6 +1,5 @@
 import torch
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
-from torch import nn
 import numpy as np
 from torch.optim import AdamW
 
@@ -8,43 +7,44 @@ from torch.optim import AdamW
 class Mask2FormerModel:
     """Wrapper for Mask2Former model to handle initialization, training, evaluation, and inference."""
 
-    def __init__(self, num_classes=6, id2label=None, label2id=None, pretrained=True):
-        # Initialize image processor
+    def __init__(self,
+                 model_name: str = "facebook/mask2former-swin-small-ade-semantic",
+                 num_classes: int = 6,
+                 class_names: list = None):
+        """
+        Initialize the Mask2Former model for universal segmentation.
+
+        Parameters:
+            model_name (str): Name of the pretrained model from Hugging Face.
+            num_classes (int): Number of segmentation classes.
+            class_names (list): Optional list of class names. If not provided, uses default.
+        """
+        # Initialize image processor with the specified model name
         self.processor = Mask2FormerImageProcessor.from_pretrained(
-            "facebook/mask2former-swin-small-ade-semantic",
-            reduce_labels=False  # do not reduce class indices (we include class 0)
+            model_name,
+            reduce_labels=False  # Do not reduce class indices (include class 0)
         )
+
         # Define class label mappings if not provided
-        if id2label is None or label2id is None:
+        if class_names is None:
             class_names = ["Building", "Land", "Road", "Vegetation", "Water", "Unlabeled"]
-            id2label = {i: name for i, name in enumerate(class_names)}
-            label2id = {name: i for i, name in id2label.items()}
-        # Load Mask2Former model
-        if pretrained:
-            if num_classes == 6:
-                # Load pretrained weights and replace classification head for 6 classes:contentReference[oaicite:25]{
-                # index=25}
-                self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
-                    "facebook/mask2former-swin-small-ade-semantic",
-                    num_labels=num_classes,
-                    id2label=id2label,
-                    label2id=label2id,
-                    ignore_mismatched_sizes=True  # allow loading despite different head size
-                )
-            else:
-                # Demo mode: load pre-trained model as-is (e.g., ADE20K 150 classes)
-                self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
-                    "facebook/mask2former-swin-small-ade-semantic"
-                )
-        else:
-            # Initialize a new model from scratch (not typically used)
-            self.model = Mask2FormerForUniversalSegmentation.from_config(
-                self.model.config if hasattr(self, 'model') else {}
-            )
-        self.backbone_frozen = False  # track backbone freeze state
+        self.id2label = {i: name for i, name in enumerate(class_names)}
+        self.label2id = {name: i for i, name in self.id2label.items()}
+
+        # Load the pretrained Mask2Former model
+        self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
+            model_name,
+            num_labels=num_classes,
+            id2label=self.id2label,
+            label2id=self.label2id,
+            ignore_mismatched_sizes=True  # Allow loading despite different head size
+        )
+
+        # Track whether the backbone is frozen
+        self.backbone_frozen = False
 
 
-    def train_model(self, train_loader, val_loader, epochs=5, lr=1e-4, device=torch.device("cpu")):
+    def train_model(self, train_loader, val_loader, epochs=30, lr=1e-4, device=torch.device("cpu")):
         """Train the model on the training set and evaluate on the validation set each epoch."""
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
@@ -72,46 +72,72 @@ class Mask2FormerModel:
             print(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}")
         return self.model
 
+    def prepare_batch(self, images, device):
+        """Prepare input tensors for the model."""
+        batch = self.processor(images=images, return_tensors="pt")
+        batch = {k: v.to(device) for k, v in batch.items()}
+        return batch
+
+    def compute_iou(pred_arr, true_arr, num_classes):
+        """Compute intersection and union for each class."""
+        intersection = np.zeros(num_classes, dtype=np.int64)
+        union = np.zeros(num_classes, dtype=np.int64)
+
+        for c in range(num_classes):
+            pred_c = (pred_arr == c)
+            true_c = (true_arr == c)
+
+            if np.any(pred_c) or np.any(true_c):
+                inter = np.logical_and(pred_c, true_c).sum()
+                union_c = np.logical_or(pred_c, true_c).sum()
+                intersection[c] += inter
+                union[c] += union_c
+        return intersection, union
+
+    def calculate_mean_iou(intersection, union):
+        """Calculate mean IoU from intersection and union."""
+        ious = np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union != 0)
+        mean_iou = np.mean(ious) if len(ious) > 0 else 0.0
+        return mean_iou, ious
+
     def evaluate(self, data_loader, device=torch.device("cpu")):
         """Evaluate the model on a dataset (compute mean IoU)."""
         self.model.to(device)
         self.model.eval()
         num_classes = self.model.config.num_labels if hasattr(self.model, "config") else 6
-        # Initialize confusion matrix components
-        intersection = [0] * num_classes
-        union = [0] * num_classes
+
+        total_intersection = np.zeros(num_classes, dtype=np.int64)
+        total_union = np.zeros(num_classes, dtype=np.int64)
+
         with torch.no_grad():
             for images, masks in data_loader:
-                # Move ground truth masks to numpy (if not already) for evaluation
-                gt_masks = [np.array(m) for m in masks]
-                # Prepare inputs (images only, for prediction)
-                batch = self.processor(images=images, return_tensors="pt")
-                batch = {k: v.to(device) for k, v in batch.items()}
+                # Convert ground truth masks to numpy arrays
+                gt_masks = np.array([np.array(m) for m in masks], dtype=np.uint8)
+
+                # Prepare inputs and make predictions
+                batch = self.prepare_batch(images, device)
                 outputs = self.model(**batch)
-                # Get predicted segmentation maps (list of tensors, one per image)
+
+                # Post-process to get predicted segmentation maps
                 seg_maps = self.processor.post_process_semantic_segmentation(
                     outputs, target_sizes=[mask.shape[:2] for mask in gt_masks]
                 )
-                # Calculate intersection and union for each class
+
+                # Accumulate intersection and union for each image
                 for pred_mask, true_mask in zip(seg_maps, gt_masks):
                     pred_arr = pred_mask.cpu().numpy().astype(np.uint8)
                     true_arr = true_mask.astype(np.uint8)
-                    for c in range(num_classes):
-                        # Skip classes not present in either to avoid dividing by zero
-                        pred_c = (pred_arr == c)
-                        true_c = (true_arr == c)
-                        if np.any(pred_c) or np.any(true_c):
-                            inter = np.logical_and(pred_c, true_c).sum()
-                            union_c = np.logical_or(pred_c, true_c).sum()
-                            intersection[c] += inter
-                            union[c] += union_c
-        # Compute mean IoU over classes (avoid division by zero)
-        ious = []
-        for c in range(num_classes):
-            if union[c] > 0:
-                ious.append(intersection[c] / union[c])
-        mean_iou = np.mean(ious) if ious else 0.0
-        return mean_iou
+
+                    intersection, union = self.compute_iou(pred_arr, true_arr, num_classes)
+                    total_intersection += intersection
+                    total_union += union
+
+        # Calculate and print mean IoU
+        mean_iou, ious = self.calculate_mean_iou(total_intersection, total_union)
+        print(f"Per-class IoU: {ious}")
+        print(f"Mean IoU: {mean_iou:.4f}")
+        return mean_iou, ious
+
 
     def predict(self, image, device=torch.device("cpu")):
         """Run inference on a single image (or patch). Returns the predicted segmentation map (H×W)."""

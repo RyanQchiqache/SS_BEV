@@ -4,6 +4,7 @@ import numpy as np
 import cv2
 from codeBase.data.DataPreprocessor import DataPreprocessor
 
+
 class TestDataPreprocessor(unittest.TestCase):
 
     @classmethod
@@ -48,6 +49,7 @@ class TestDataPreprocessor(unittest.TestCase):
         self.assertEqual(train_masks.shape[1:], (256, 256))
         self.assertGreaterEqual(len(train_imgs), 1)
         self.assertGreaterEqual(len(val_imgs), 1)
+
 
 if __name__ == "__main__":
     unittest.main()

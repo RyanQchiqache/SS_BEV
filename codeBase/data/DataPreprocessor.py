@@ -1,5 +1,5 @@
 import os
-import cv2
+from PIL import Image
 import numpy as np
 from typing import Dict, Tuple
 
@@ -22,7 +22,7 @@ class DataPreprocessor:
         (155, 155, 155): 5  # Unlabeled
     }
 
-    def __init__(self, image_dir: str, mask_dir: str, patch_size: int = 256):
+    def __init__(self, image_dir: str, mask_dir: str, patch_size: int = 512):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.patch_size = patch_size
@@ -39,7 +39,7 @@ class DataPreprocessor:
             class_map[matches] = class_idx
         return class_map
 
-    def _patchify_image(self, image: np.ndarray, mask: np.ndarray):
+    def _patchify_image(self, image: np.ndarray, mask: np.ndarray)-> Tuple[np.ndarray, np.ndarray]:
         """
         Crop image & mask to the nearest multiple of patch_size, then split into patches.
         """
@@ -47,6 +47,7 @@ class DataPreprocessor:
         # Calculate nearest dimensions divisible by patch_size
         new_H = (H // self.patch_size) * self.patch_size
         new_W = (W // self.patch_size) * self.patch_size
+        # Cropping the image and mask
         image = image[:new_H, :new_W]
         mask = mask[:new_H, :new_W]
 
@@ -67,7 +68,7 @@ class DataPreprocessor:
                 mask_patches.append(mask_patch)
         return img_patches, mask_patches
 
-    def prepare_data(self, train_split: float = 0.8):
+    def prepare_data(self, train_split: float = 0.8) -> Tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
         Load all images and masks, patchify them, and split into training/validation sets.
         """
@@ -81,18 +82,12 @@ class DataPreprocessor:
             img_path = os.path.join(self.image_dir, img_file)
             mask_path = os.path.join(self.mask_dir, mask_file)
 
-            # Read image and mask using OpenCV (BGR) and convert to RGB
-            bgr_image = cv2.imread(img_path, cv2.IMREAD_COLOR)
-            if bgr_image is None:
-                print(f"❌ Failed to load image: {img_path}")
+            try:
+                rgb_image = np.array(Image.open(img_path).convert("RGB"))
+                rgb_mask = np.array(Image.open(mask_path).convert("RGB"))
+            except Exception as e:
+                print("")
                 continue
-            rgb_image = cv2.cvtColor(bgr_image, cv2.COLOR_BGR2RGB)
-
-            bgr_mask = cv2.imread(mask_path, cv2.IMREAD_COLOR)
-            if bgr_mask is None:
-                print(f"❌ Failed to load mask: {mask_path}")
-                continue
-            rgb_mask = cv2.cvtColor(bgr_mask, cv2.COLOR_BGR2RGB)
 
             # Convert mask RGB to class indices
             class_mask = self.rgb_to_class(rgb_mask)
@@ -118,5 +113,5 @@ class DataPreprocessor:
         val_images = all_images[val_idx]
         val_masks = all_masks[val_idx]
 
-        print(f"✅ Prepared data with {len(train_images)} training and {len(val_images)} validation samples.")
+        print(f" Prepared data with {len(train_images)} training and {len(val_images)} validation samples.")
         return train_images, train_masks, val_images, val_masks
