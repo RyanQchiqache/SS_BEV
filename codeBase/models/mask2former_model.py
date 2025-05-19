@@ -22,7 +22,8 @@ class Mask2FormerModel:
         # Initialize image processor with the specified model name
         self.processor = Mask2FormerImageProcessor.from_pretrained(
             model_name,
-            reduce_labels=False  # Do not reduce class indices (include class 0)
+            reduce_labels=False,  # Do not reduce class indices (include class 0)
+            do_rescale=False
         )
 
         # Define class label mappings if not provided
@@ -43,56 +44,57 @@ class Mask2FormerModel:
         # Track whether the backbone is frozen
         self.backbone_frozen = False
 
-
     def train_model(self, train_loader, val_loader, epochs=30, lr=1e-4, device=torch.device("cpu")):
         """Train the model on the training set and evaluate on the validation set each epoch."""
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
+
         for epoch in range(1, epochs + 1):
             self.model.train()
-            # If backbone is frozen, ensure it stays in eval mode during training
             if self.backbone_frozen:
                 if hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
                     self.model.model.backbone.eval()
             total_loss = 0.0
+
             # Training loop
-            for images, masks in train_loader:
-                # Prepare batch inputs using the Mask2FormerImageProcessor
-                batch = self.processor(images=images, segmentation_maps=masks, return_tensors="pt")
-                batch = {k: v.to(device) for k, v in batch.items()}
-                outputs = self.model(**batch)
-                loss = outputs.loss
-                optimizer.zero_grad()
-                loss.backward()
-                optimizer.step()
-                total_loss += loss.item()
+            for batch in train_loader:
+                try:
+                    # Unpack the batch
+                    images, masks = batch
+
+                    # Ensure correct format and move to device
+                    images = images.permute(0, 2, 3, 1).contiguous().to(device)  # (B, H, W, C)
+                    masks = masks.to(device)
+
+                    # Prepare batch inputs using the Mask2FormerImageProcessor
+                    batch = self.processor(images=[image for image in images],
+                                           segmentation_maps=[mask for mask in masks],
+                                           return_tensors="pt")
+                    batch = {k: v.to(device) if isinstance(v, torch.Tensor) else v for k, v in batch.items()}
+
+                    # Forward pass
+                    outputs = self.model(**batch)
+                    loss = outputs.loss
+
+                    # Backpropagation and optimization
+                    optimizer.zero_grad()
+                    loss.backward()
+                    optimizer.step()
+
+                    # Track total loss
+                    total_loss += loss.item()
+
+                except Exception as e:
+                    print(f"Error processing batch: {e}")
+                    continue
+
             avg_loss = total_loss / len(train_loader)
+
             # Compute validation IoU after each epoch
             val_miou = self.evaluate(val_loader, device=device)
             print(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}")
+
         return self.model
-
-    def prepare_batch(self, images, device):
-        """Prepare input tensors for the model."""
-        batch = self.processor(images=images, return_tensors="pt")
-        batch = {k: v.to(device) for k, v in batch.items()}
-        return batch
-
-    def compute_iou(pred_arr, true_arr, num_classes):
-        """Compute intersection and union for each class."""
-        intersection = np.zeros(num_classes, dtype=np.int64)
-        union = np.zeros(num_classes, dtype=np.int64)
-
-        for c in range(num_classes):
-            pred_c = (pred_arr == c)
-            true_c = (true_arr == c)
-
-            if np.any(pred_c) or np.any(true_c):
-                inter = np.logical_and(pred_c, true_c).sum()
-                union_c = np.logical_or(pred_c, true_c).sum()
-                intersection[c] += inter
-                union[c] += union_c
-        return intersection, union
 
     def calculate_mean_iou(intersection, union):
         """Calculate mean IoU from intersection and union."""
