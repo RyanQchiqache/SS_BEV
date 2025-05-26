@@ -11,7 +11,8 @@ env/
 checkpoints/
 
 # Dataset
-SS_data/
+Semantic_segmentation_dataset/
+SS_data
 
 # PyCharm
 .idea/

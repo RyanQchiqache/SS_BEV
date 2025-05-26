@@ -2,8 +2,8 @@ import os
 import shutil
 
 root_directory = 'Semantic_segmentation_dataset/'
-image_target_dir = 'SS_BEV/SS_data/images/'
-mask_target_dir = 'SS_BEV/SS_data/masks/'
+image_target_dir = 'SS_BEV/images/'
+mask_target_dir = 'SS_BEV/masks/'
 
 os.makedirs(image_target_dir, exist_ok=True)
 os.makedirs(mask_target_dir, exist_ok=True)
