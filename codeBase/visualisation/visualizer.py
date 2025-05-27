@@ -1,7 +1,9 @@
 from PIL import Image
 import numpy as np
 import cv2
+from codeBase.config.logging_setup import setup_logger
 
+logger = setup_logger(__name__)
 
 class Visualizer:
     """
@@ -85,7 +87,8 @@ class Visualizer:
         """
         overlay = Visualizer.overlay_prediction(image, mask, alpha=alpha)
         overlay.save(filepath)
-        print(f"✅ Saved overlay to {filepath}")
+        logger.info(f"Saved overlay to {filepath}")
+
 
     @staticmethod
     def save_comparison(image, true_mask, pred_mask, filepath, alpha=0.5):
@@ -94,4 +97,18 @@ class Visualizer:
         """
         comparison = Visualizer.compare_masks(image, true_mask, pred_mask, alpha=alpha)
         comparison.save(filepath)
-        print(f"✅ Saved comparison to {filepath}")
+        logger.info(f" Saved comparison to {filepath}")
+
+    @staticmethod
+    def save_full_comparison(image, gt_mask, pred_mask, save_path, alpha=0.6):
+        gt_overlay = Visualizer.overlay_prediction(image, gt_mask, alpha=alpha)
+        pred_overlay = Visualizer.overlay_prediction(image, pred_mask, alpha=alpha)
+
+        combined_width = gt_overlay.width + pred_overlay.width
+        combined_height = max(gt_overlay.height, pred_overlay.height)
+        comparison = Image.new("RGB", (combined_width, combined_height))
+        comparison.paste(gt_overlay, (0, 0))
+        comparison.paste(pred_overlay, (gt_overlay.width, 0))
+        comparison.save(save_path)
+        logger.info(f"Saved full comparison to {save_path}")
+
