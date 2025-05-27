@@ -2,15 +2,9 @@ import torch
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
-import logging
+from codeBase.config.logging_setup import setup_logger
 
-logger = logging.getLogger(__name__)
-logger.setLevel(logging.INFO)
-
-handler = logging.StreamHandler()
-formatter = logging.Formatter('[%(levelname)s] %(message)s')
-handler.setFormatter(formatter)
-logger.addHandler(handler)
+logger = setup_logger(__name__)
 
 class Mask2FormerModel:
     """Wrapper for Mask2Former model to handle initialization, training, evaluation, and inference."""
@@ -94,8 +88,8 @@ class Mask2FormerModel:
                     continue
 
             avg_loss = total_loss / len(train_loader)
-            val_miou = self.evaluate(val_loader, device=device)
-            logger.info(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}")
+            val_miou, per_class_iou = self.evaluate(val_loader, device=device)
+            logger.info(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}, Per-class IoU: {per_class_iou}")
 
             if tensorboard_writer:
                 tensorboard_writer.add_scalar("Loss/train", avg_loss, epoch)
@@ -147,7 +141,7 @@ class Mask2FormerModel:
         mean_iou, ious = Mask2FormerModel.calculate_mean_iou(total_intersection, total_union)
         logger.info(f"Per-class IoU: {ious}")
         logger.info(f"Mean IoU: {mean_iou:.4f}")
-        return mean_iou
+        return mean_iou, ious
 
     def predict(self, image, device=torch.device("cpu")):
         logger.info("Generating prediction...")
