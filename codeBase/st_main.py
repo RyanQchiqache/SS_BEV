@@ -3,63 +3,57 @@ import torch
 import numpy as np
 from torch.utils.data import DataLoader, TensorDataset
 from torch.utils.tensorboard import SummaryWriter
-import logging
+from codeBase.config.logging_setup import setup_logger
+from codeBase.config.logging_setup import load_config
+
 
 from codeBase.data.DataPreprocessor import DataPreprocessor
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
 
-# Set random seed for reproducibility
+config = load_config()
+
 torch.manual_seed(42)
 np.random.seed(42)
 
-# Configuration
-image_dir = "/home/ryqi/PycharmProjects/SS_BEV/SS_BEV/images"
-mask_dir = "/home/ryqi/PycharmProjects/SS_BEV/SS_BEV/masks"
-patch_size = 8
-batch_size = 1
-num_classes = 6
-epochs = 1
-learning_rate = 1e-4
-pretrained_weights = "facebook/mask2former-swin-small-ade-semantic"
-output_dir = "outputs"
-model_save_dir = os.path.join(output_dir, "models")
-visualization_dir = os.path.join(output_dir, "visualizations")
-logs_dir = "logs"
+image_dir = config["data"]["images_dir"]
+mask_dir = config["data"]["masks_dir"]
+patch_size = int(config["data"]["patch_size"])
+batch_size = int(config["data"]["batch_size"])
+num_classes = int(config["data"]["num_classes"])
+epochs = int(config["model"]["epochs"])
+learning_rate = float(config["model"]["learning_rate"])
+pretrained_weights = config["model"]["pretrained_weights"]
+
+output_dir = config["paths"]["output_dir"]
+model_save_dir = config["paths"]["model_save_dir"]
+visualization_dir = config["paths"]["visualization_dir"]
+logs_dir = config["paths"]["logs_dir"]
 tensorboard_dir = os.path.join(logs_dir, "tensorboard")
+
 
 # CUDA setup
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 print(f"Using device: {device}")
 
-# Create output directories
-os.makedirs(output_dir, exist_ok=True)
-os.makedirs(model_save_dir, exist_ok=True)
-os.makedirs(visualization_dir, exist_ok=True)
-os.makedirs(logs_dir, exist_ok=True)
-os.makedirs(tensorboard_dir, exist_ok=True)
+for dir_path in [output_dir, model_save_dir, visualization_dir, logs_dir, tensorboard_dir]:
+    os.makedirs(dir_path, exist_ok=True)
 
-# Logging configuration
-logging.basicConfig(
-    filename=os.path.join(logs_dir, "training.log"),
-    filemode='w',
-    format='[%(asctime)s] %(levelname)s: %(message)s',
-    level=logging.INFO
-)
-logger = logging.getLogger()
 
-# TensorBoard setup
+logger = setup_logger(__name__)
 writer = SummaryWriter(log_dir=tensorboard_dir)
 
 def prepare_data():
     logger.info("Preparing data...")
     preprocessor = DataPreprocessor(image_dir=image_dir, mask_dir=mask_dir, patch_size=patch_size)
-    train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(train_split=0.8)
+    train_imgs, train_masks, val_imgs, val_masks, val_coords, val_shape = preprocessor.prepare_data(
+        train_split=config["data"]["train_split"],
+        debug_limit=20
+    )
     logger.info(f"Loaded {len(train_imgs)} training and {len(val_imgs)} validation samples.")
-    return train_imgs, train_masks, val_imgs, val_masks
+    return train_imgs, train_masks, val_imgs, val_masks, val_coords, val_shape
 
 def create_dataloaders(train_imgs, train_masks, val_imgs, val_masks):
-    print("[INFO] Creating data loaders...")
     logger.info("Creating data loaders...")
 
     train_dataset = TensorDataset(
@@ -100,7 +94,7 @@ def evaluate_model(segmenter, val_loader):
     mean_iou, per_class_iou = segmenter.evaluate(val_loader, device=device)
     logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
 
-def visualize_predictions(segmenter, val_imgs, val_masks, prefix="prediction"):
+"""def visualize_predictions(segmenter, val_imgs, val_masks, prefix="prediction"):
     logger.info(f"Generating visualizations with prefix '{prefix}'")
     for i in range(min(3, len(val_imgs))):
         try:
@@ -116,13 +110,39 @@ def visualize_predictions(segmenter, val_imgs, val_masks, prefix="prediction"):
         except Exception as e:
             logger.warning(f"Skipping visualization {i} due to error: {e}")
     logger.info("Visualization process completed.")
+"""
+def visualize_predictions(segmenter, val_imgs, val_masks, patch_coords, original_shape, prefix="reconstructed"):
+    logger.info(f"Generating full-size visualizations with prefix '{prefix}'")
+
+    patch_size = config["data"]["patch_size"]
+    H, W = original_shape
+
+    # Step 1: Predict masks
+    pred_masks = []
+    for patch in val_imgs:
+        pred = segmenter.predict(patch, device=device)
+        pred_masks.append(pred)
+
+    # Step 2: Stitch image and predicted mask
+    reconstructed_image = np.zeros((H, W, 3), dtype=np.uint8)
+    reconstructed_gt_mask = np.zeros((H, W), dtype=np.uint8)
+    reconstructed_pred_mask = np.zeros((H, W), dtype=np.uint8)
+
+    for (y0, x0), patch, gt_mask, pred_mask in zip(patch_coords, val_imgs, val_masks, pred_masks):
+        reconstructed_image[y0:y0+patch_size, x0:x0+patch_size] = patch
+        reconstructed_gt_mask[y0:y0+patch_size, x0:x0+patch_size] = gt_mask
+        reconstructed_pred_mask[y0:y0+patch_size, x0:x0+patch_size] = pred_mask
+
+    # Step 3: Save full comparison
+    save_path = os.path.join(config["paths"]["visualization_dir"], f"{prefix}_comparison.png")
+    Visualizer.save_full_comparison(reconstructed_image, reconstructed_gt_mask, reconstructed_pred_mask, save_path)
 
 # Main workflow
 if __name__ == "__main__":
-    train_imgs, train_masks, val_imgs, val_masks = prepare_data()
+    train_imgs, train_masks, val_imgs, val_masks, val_coords, val_shape = prepare_data()
     train_loader, val_loader = create_dataloaders(train_imgs, train_masks, val_imgs, val_masks)
     segmenter = train_model(train_loader, val_loader)
     evaluate_model(segmenter, val_loader)
-    visualize_predictions(segmenter, val_imgs, val_masks, prefix="trained")
+    visualize_predictions(segmenter, val_imgs, val_masks, val_coords, val_shape, prefix="trained")
     writer.close()
     logger.info("Workflow completed.")
