@@ -95,6 +95,16 @@ class SegmentationPipeline:
             debug_limit=100
         )
 
+        # Build augmentation pipeline ON FULL IMAGES
+        if self.config.get("augmentation"):
+            train_transform = self.build_augmentation_pipeline(self.config)
+            augmented_imgs, augmented_masks = [], []
+            for img, mask in zip(train_imgs, train_masks):
+                augmented = train_transform(image=img, mask=mask)
+                augmented_imgs.append(augmented["image"])
+                augmented_masks.append(augmented["mask"])
+            train_imgs, train_masks = augmented_imgs, augmented_masks
+
         def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[List[np.ndarray], List[np.ndarray]]:
             img_patches: List[np.ndarray] = []
             mask_patches: List[np.ndarray] = []
@@ -108,16 +118,9 @@ class SegmentationPipeline:
         train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
-        transform = self.build_augmentation_pipeline()
-
-        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches, transform=transform)
-        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches, transform=None)
-
-        train_loader: DataLoader = DataLoader(train_dataset, batch_size=self.batch_size, shuffle=True, collate_fn=SatelliteDataset.collate_fn)
-        val_loader: DataLoader = DataLoader(val_dataset, batch_size=self.batch_size, shuffle=False, collate_fn=SatelliteDataset.collate_fn)
-
         self.logger.info(f"Patchified into {len(train_img_patches)} training and {len(val_img_patches)} validation patches.")
-        return train_loader, val_loader, val_imgs, val_masks, preprocessor
+        return train_img_patches, train_mask_patches, val_imgs, val_masks, preprocessor
+
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
         """
