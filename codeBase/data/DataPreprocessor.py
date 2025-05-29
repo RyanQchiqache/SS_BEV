@@ -1,10 +1,8 @@
 import os
-from PIL import Image
 import numpy as np
+from PIL import Image
 from typing import Dict, Tuple, List, Any
-from codeBase.config.logging_setup import setup_logger
 
-logger = setup_logger(__name__)
 
 class DataPreprocessor:
     """
@@ -13,6 +11,7 @@ class DataPreprocessor:
     - Patchify into 256x256 tiles
     - Normalize images
     - Convert RGB mask colors to class labels
+    - Reconstruct full images from patches
     """
     COLOR_TO_CLASS: Dict[Tuple[int, int, int], int] = {
         (60, 16, 152): 0,     # Building
@@ -23,7 +22,7 @@ class DataPreprocessor:
         (155, 155, 155): 5    # Unlabeled
     }
 
-    def __init__(self, image_dir: str, mask_dir: str, patch_size):
+    def __init__(self, image_dir: str, mask_dir: str, patch_size: int):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.patch_size = patch_size
@@ -36,23 +35,19 @@ class DataPreprocessor:
             class_map[matches] = class_idx
         return class_map
 
-    def _patchify_image(self, image: np.ndarray, mask: np.ndarray) -> Tuple[List[Any], List[Any], List[Any]]:
+    def _patchify_image_old(self, image: np.ndarray, mask: np.ndarray) -> Tuple[List[Any], List[Any], List[Any]]:
         H, W = mask.shape[:2]
-        # Calculate nearest dimensions divisible by patch_size
         new_H = (H // self.patch_size) * self.patch_size
         new_W = (W // self.patch_size) * self.patch_size
-        # Cropping the image and mask
         image = image[:new_H, :new_W]
         mask = mask[:new_H, :new_W]
 
-        # Number of patches along each dimension
         h_patches = new_H // self.patch_size
         w_patches = new_W // self.patch_size
         img_patches = []
         mask_patches = []
-        cordinaions = []
+        coords = []
 
-        # Extract patches
         for i in range(h_patches):
             for j in range(w_patches):
                 y0 = i * self.patch_size
@@ -61,66 +56,98 @@ class DataPreprocessor:
                 mask_patch = mask[y0:y0 + self.patch_size, x0:x0 + self.patch_size]
                 img_patches.append(img_patch)
                 mask_patches.append(mask_patch)
-                cordinaions.append((x0, y0))
+                coords.append((y0, x0))
 
-        return img_patches, mask_patches, cordinaions
+        return img_patches, mask_patches, coords
 
-    def prepare_data(self, train_split: float = 0.8, debug_limit: int = 100):
-        logger.info("Loading and processing dataset...")
+    def patchify_image(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int]]:
+        ps = self.patch_size
+        step = ps - self.overlap
+        H, W = image.shape[:2]
+
+        pad_bottom = (ps - H % ps) % ps
+        pad_right = (ps - W % ps) % ps
+
+        if pad_bottom or pad_right:
+            image = np.pad(
+                image,
+                ((0, pad_bottom), (0, pad_right), (0, 0)) if image.ndim == 3 else ((0, pad_bottom), (0, pad_right)),
+                mode='constant',
+                constant_values=0
+            )
+            H, W = image.shape[:2]
+
+        patches = []
+        coordinates = []
+
+        for top in range(0, H - ps + 1, step):
+            for left in range(0, W - ps + 1, step):
+                patch = image[top:top + ps, left:left + ps]
+                patches.append(patch)
+                coordinates.append((top, left))
+
+        return patches, coordinates, (H, W)
+
+    def reconstruct_from_patches(self, patches: List[np.ndarray], coordinates: List[Tuple[int, int]],
+                                 full_shape: Tuple[int, int]) -> np.ndarray:
+        H, W = full_shape
+        ps = self.patch_size
+        is_rgb = patches[0].ndim == 3
+        C = patches[0].shape[2] if is_rgb else 1
+
+        canvas = np.zeros((H, W, C), dtype=np.float32) if is_rgb else np.zeros((H, W), dtype=np.float32)
+        weight = np.zeros((H, W), dtype=np.float32)
+
+        for patch, (top, left) in zip(patches, coordinates):
+            if is_rgb:
+                canvas[top:top + ps, left:left + ps] += patch.astype(np.float32)
+            else:
+                canvas[top:top + ps, left:left + ps] += patch.astype(np.float32)
+            weight[top:top + ps, left:left + ps] += 1.0
+
+        weight[weight == 0] = 1.0
+        if is_rgb:
+            canvas = canvas / weight[..., None]
+        else:
+            canvas = canvas / weight
+
+        return canvas.astype(patches[0].dtype)
+
+    def prepare_data(self, train_split: float = 0.8, debug_limit: int = None):
         image_files = sorted(os.listdir(self.image_dir))
         mask_files = sorted(os.listdir(self.mask_dir))
-        all_images = []
-        all_masks = []
-        all_coords = []
-        val_coords = []
-        val_original_shape = None
 
-        for img_file, mask_file in zip(image_files, mask_files):
-            img_path = os.path.join(self.image_dir, img_file)
-            mask_path = os.path.join(self.mask_dir, mask_file)
+        assert len(image_files) == len(mask_files), "Mismatch between images and masks"
 
-            try:
-                rgb_image = np.array(Image.open(img_path).convert("RGB"))
-                rgb_mask = np.array(Image.open(mask_path).convert("RGB"))
-            except Exception as e:
-                logger.warning(f"Skipping {img_file} due to error: {e}")
-                continue
+        total_images = len(image_files)
+        split_idx = int(train_split * total_images)
 
-            class_mask = self.rgb_to_class(rgb_mask)
-            img_patches, mask_patches, patch_coords = self._patchify_image(rgb_image, class_mask)
+        train_imgs, train_masks = [], []
+        val_imgs, val_masks = [], []
 
-            all_images.extend(img_patches)
-            all_masks.extend(mask_patches)
-            all_coords.extend(patch_coords)
+        for idx in range(split_idx):
+            img_join = os.path.join(self.image_dir, image_files[idx])
+            img = np.array(Image.open(img_join).convert("RGB"))
+            mask_join = os.path.join(self.mask_dir, mask_files[idx])
+            mask_rgb = np.array(Image.open(mask_join).convert("RGB"))
+            mask = self.rgb_to_class(mask_rgb)
 
-            # Use this image's shape for later reconstruction (only once)
-            if val_original_shape is None:
-                val_original_shape = rgb_image.shape[:2]
-                val_coords = patch_coords.copy()
+            train_imgs.append(img)
+            train_masks.append(mask)
 
-            if debug_limit and len(all_images) >= debug_limit:
-                break
+        for idx in range(split_idx, total_images):
+            img = np.array(Image.open(os.path.join(self.image_dir, image_files[idx])).convert("RGB"))
+            mask_rgb = np.array(Image.open(os.path.join(self.mask_dir, mask_files[idx])).convert("RGB"))
+            mask = self.rgb_to_class(mask_rgb)
+
+            val_imgs.append(img)
+            val_masks.append(mask)
 
         if debug_limit is not None:
-            all_images = all_images[:debug_limit]
-            all_masks = all_masks[:debug_limit]
-            logger.info(f"Debug mode active: using first {debug_limit} samples")
+            train_imgs = train_imgs[:debug_limit]
+            train_masks = train_masks[:debug_limit]
+            val_imgs = val_imgs[:debug_limit]
+            val_masks = val_masks[:debug_limit]
 
-        all_images = np.array(all_images, dtype=np.uint8)
-        all_masks = np.array(all_masks, dtype=np.uint8)
-
-        total = len(all_images)
-        train_count = int(total * train_split)
-        indices = np.random.permutation(total)
-        train_idx = indices[:train_count]
-        val_idx = indices[train_count:]
-
-        train_images = all_images[train_idx]
-        train_masks = all_masks[train_idx]
-        val_images = all_images[val_idx]
-        val_masks = all_masks[val_idx]
-
-        logger.info(f"Prepared data with {len(train_images)} training and {len(val_images)} validation samples.")
-
-        return train_images, train_masks, val_images, val_masks, val_coords, val_original_shape
+        return train_imgs, train_masks, val_imgs, val_masks
 

@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
@@ -89,13 +90,18 @@ class Mask2FormerModel:
 
             avg_loss = total_loss / len(train_loader)
             val_miou, per_class_iou = self.evaluate(val_loader, device=device)
-            logger.info(f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}, Per-class IoU: {per_class_iou}")
+
+            logger.info(
+                f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}, Per-class IoU: {per_class_iou}")
 
             if tensorboard_writer:
                 tensorboard_writer.add_scalar("Loss/train", avg_loss, epoch)
                 tensorboard_writer.add_scalar("IoU/val", val_miou, epoch)
+                for cls_idx, cls_iou in enumerate(per_class_iou):
+                    tensorboard_writer.add_scalar(f"IoU/Class_{cls_idx}", cls_iou, epoch)
 
         return self.model
+
     @staticmethod
     def calculate_mean_iou(intersection, union):
         ious = np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union != 0)

@@ -1,6 +1,7 @@
 from PIL import Image
 import numpy as np
 import cv2
+import matplotlib.pyplot as plt
 from codeBase.config.logging_setup import setup_logger
 
 logger = setup_logger(__name__)
@@ -72,15 +73,6 @@ class Visualizer:
         return comparison
 
     @staticmethod
-    def display_image(image):
-        """
-        Display the given image using PIL's show method.
-        """
-        if isinstance(image, np.ndarray):
-            image = Image.fromarray(image)
-        image.show()
-
-    @staticmethod
     def save_overlay(image, mask, filepath, alpha=0.6):
         """
         Save the overlay of an image and mask to a specified filepath.
@@ -101,14 +93,33 @@ class Visualizer:
 
     @staticmethod
     def save_full_comparison(image, gt_mask, pred_mask, save_path, alpha=0.6):
-        gt_overlay = Visualizer.overlay_prediction(image, gt_mask, alpha=alpha)
-        pred_overlay = Visualizer.overlay_prediction(image, pred_mask, alpha=alpha)
+        """
+        Save a subplot comparison: [Original Image] [GT Overlay] [Pred Overlay]
+        """
+        # Prepare overlays
+        gt_overlay = Visualizer.overlay_prediction(image, gt_mask, alpha)
+        pred_overlay = Visualizer.overlay_prediction(image, pred_mask, alpha)
 
-        combined_width = gt_overlay.width + pred_overlay.width
-        combined_height = max(gt_overlay.height, pred_overlay.height)
-        comparison = Image.new("RGB", (combined_width, combined_height))
-        comparison.paste(gt_overlay, (0, 0))
-        comparison.paste(pred_overlay, (gt_overlay.width, 0))
-        comparison.save(save_path)
+        fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+
+        # Convert PIL images to displayable format
+        orig_image = np.array(image if isinstance(image, Image.Image) else Image.fromarray(image))
+
+        axes[0].imshow(orig_image)
+        axes[0].set_title("Original Image")
+
+        axes[1].imshow(gt_overlay)
+        axes[1].set_title("Ground Truth Overlay")
+
+        axes[2].imshow(pred_overlay)
+        axes[2].set_title("Predicted Overlay")
+
+        # Clean up axes
+        for ax in axes:
+            ax.axis('off')
+
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
         logger.info(f"Saved full comparison to {save_path}")
 

@@ -20,6 +20,20 @@ model:
   save_best_only: true
   checkpoint_interval: 5
 
+augmentation:
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
+  rotate_90: 0.5
+  brightness_contrast: 0.2
+  gaussian_blur: 0.2
+  resized_crop:
+    enable: true
+    height: 64
+    width: 64
+    scale: [ 0.8, 1.0 ]
+    p: 0.3
+
+
 training:
   optimizer: AdamW
   loss_function: cross_entropy
