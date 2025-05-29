@@ -1,4 +1,5 @@
 import torch
+from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW

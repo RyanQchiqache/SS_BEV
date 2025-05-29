@@ -11,6 +11,7 @@ class DataPreprocessor:
     - Patchify into 256x256 tiles
     - Normalize images
     - Convert RGB mask colors to class labels
+    - Reconstruct full images from patches
     """
     COLOR_TO_CLASS: Dict[Tuple[int, int, int], int] = {
         (60, 16, 152): 0,     # Building
@@ -34,7 +35,7 @@ class DataPreprocessor:
             class_map[matches] = class_idx
         return class_map
 
-    def _patchify_image(self, image: np.ndarray, mask: np.ndarray) -> Tuple[List[Any], List[Any], List[Any]]:
+    def _patchify_image_old(self, image: np.ndarray, mask: np.ndarray) -> Tuple[List[Any], List[Any], List[Any]]:
         H, W = mask.shape[:2]
         new_H = (H // self.patch_size) * self.patch_size
         new_W = (W // self.patch_size) * self.patch_size
@@ -59,6 +60,59 @@ class DataPreprocessor:
 
         return img_patches, mask_patches, coords
 
+    def patchify_image(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int]]:
+        ps = self.patch_size
+        step = ps - self.overlap
+        H, W = image.shape[:2]
+
+        pad_bottom = (ps - H % ps) % ps
+        pad_right = (ps - W % ps) % ps
+
+        if pad_bottom or pad_right:
+            image = np.pad(
+                image,
+                ((0, pad_bottom), (0, pad_right), (0, 0)) if image.ndim == 3 else ((0, pad_bottom), (0, pad_right)),
+                mode='constant',
+                constant_values=0
+            )
+            H, W = image.shape[:2]
+
+        patches = []
+        coordinates = []
+
+        for top in range(0, H - ps + 1, step):
+            for left in range(0, W - ps + 1, step):
+                patch = image[top:top + ps, left:left + ps]
+                patches.append(patch)
+                coordinates.append((top, left))
+
+        return patches, coordinates, (H, W)
+
+    def reconstruct_from_patches(self, patches: List[np.ndarray], coordinates: List[Tuple[int, int]],
+                                 full_shape: Tuple[int, int]) -> np.ndarray:
+        H, W = full_shape
+        ps = self.patch_size
+        is_rgb = patches[0].ndim == 3
+        C = patches[0].shape[2] if is_rgb else 1
+
+        canvas = np.zeros((H, W, C), dtype=np.float32) if is_rgb else np.zeros((H, W), dtype=np.float32)
+        weight = np.zeros((H, W), dtype=np.float32)
+
+        for patch, (top, left) in zip(patches, coordinates):
+            if is_rgb:
+                canvas[top:top + ps, left:left + ps] += patch.astype(np.float32)
+            else:
+                canvas[top:top + ps, left:left + ps] += patch.astype(np.float32)
+            weight[top:top + ps, left:left + ps] += 1.0
+
+        weight[weight == 0] = 1.0
+        if is_rgb:
+            canvas = canvas / weight[..., None]
+        else:
+            canvas = canvas / weight
+
+        return canvas.astype(patches[0].dtype)
+
     def prepare_data(self, train_split: float = 0.8, debug_limit: int = None):
         image_files = sorted(os.listdir(self.image_dir))
         mask_files = sorted(os.listdir(self.mask_dir))
@@ -72,8 +126,10 @@ class DataPreprocessor:
         val_imgs, val_masks = [], []
 
         for idx in range(split_idx):
-            img = np.array(Image.open(os.path.join(self.image_dir, image_files[idx])).convert("RGB"))
-            mask_rgb = np.array(Image.open(os.path.join(self.mask_dir, mask_files[idx])).convert("RGB"))
+            img_join = os.path.join(self.image_dir, image_files[idx])
+            img = np.array(Image.open(img_join).convert("RGB"))
+            mask_join = os.path.join(self.mask_dir, mask_files[idx])
+            mask_rgb = np.array(Image.open(mask_join).convert("RGB"))
             mask = self.rgb_to_class(mask_rgb)
 
             train_imgs.append(img)
@@ -93,5 +149,5 @@ class DataPreprocessor:
             val_imgs = val_imgs[:debug_limit]
             val_masks = val_masks[:debug_limit]
 
-        return (train_imgs, train_masks, val_imgs, val_masks)
+        return train_imgs, train_masks, val_imgs, val_masks
 
