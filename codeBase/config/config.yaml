@@ -9,7 +9,8 @@ data:
   num_classes: 6
   patch_size: 128
   train_split: 0.8
-  debug_limit: 5
+  debug : true
+  debug_limit: 1
 
 model:
   name: "Mask2Former"
@@ -43,12 +44,12 @@ training:
   early_stopping_patience: 5
 
 paths:
-  output_dir: outputs
-  model_save_dir: outputs/models
-  visualization_dir: outputs/visualizations
+  output_dir: codeBase/outputs
+  model_save_dir: codeBase/outputs/models
+  visualization_dir: codeBase/outputs/visualizations
   logs_dir: logs
-  checkpoint_path: outputs/models/checkpoints
-  best_model_path: outputs/models/best_model.pth
+  checkpoint_path: codeBase/outputs/models/checkpoints
+  best_model_path: codeBase/outputs/models/best_model.pth
 
 visualization:
   show_masks: true

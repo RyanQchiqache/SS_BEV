@@ -120,6 +120,11 @@ class DataPreprocessor:
 
         assert len(image_files) == len(mask_files), "Mismatch between images and masks"
 
+        combined = list(zip(image_files, mask_files))
+        np.random.shuffle(combined)
+        image_files, mask_files = zip(*combined)
+        image_files, mask_files = list(image_files), list(mask_files)
+
         total_images = len(image_files)
         split_idx = int(train_split * total_images)
 

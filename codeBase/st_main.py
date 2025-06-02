@@ -46,7 +46,6 @@ class SegmentationPipeline:
 
         self.logger = setup_logger(__name__)
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
-
     def build_augmentation_pipeline(self) -> A.Compose:
         """
         Builds the Albumentations data augmentation pipeline based on configuration.
@@ -103,10 +102,11 @@ class SegmentationPipeline:
             overlap=0
         )
 
-        # Load and split raw images and masks
+        debug = self.config["data"].get("debug", False)
+        debug_limit = self.config["data"].get("debug_limit", None) if debug else None
         train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
             train_split=self.config["data"]["train_split"],
-            debug_limit=5 if self.config["data"].get("debug", False) else None
+            debug_limit=debug_limit
         )
 
         # Apply augmentations to full images (optional, before patchifying)
@@ -196,7 +196,14 @@ class SegmentationPipeline:
         mean_iou, per_class_iou = segmenter.evaluate(val_loader, device=self.device)
         self.logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
 
-    def visualize(self, segmenter: Mask2FormerModel, val_imgs: List[np.ndarray], val_masks: List[np.ndarray], preprocessor: DataPreprocessor, prefix: str = "prediction") -> None:
+    def visualize(
+            self,
+            segmenter: Mask2FormerModel,
+            val_imgs: List[np.ndarray],
+            val_masks: List[np.ndarray],
+            preprocessor: DataPreprocessor,
+            prefix: str = "prediction"
+    ) -> None:
         """
         Visualizes predictions by reconstructing full images from predicted patches.
 
@@ -204,22 +211,47 @@ class SegmentationPipeline:
             segmenter: Trained segmentation model
             val_imgs: List of original validation images
             val_masks: List of original validation masks
-            preprocessor: DataPreprocessor instance used to reconstruct
-            prefix: Prefix for saving visualizations
+            preprocessor: DataPreprocessor instance used for patchification/reconstruction
+            prefix: Prefix for saving visualization filenames
         """
         self.logger.info(f"Generating visualizations with prefix '{prefix}'")
+
         for i in range(min(3, len(val_imgs))):
             try:
                 img = val_imgs[i]
                 gt_mask = val_masks[i]
-                img_patches, coords, full_shape = preprocessor.patchify_image(img)
+                original_shape = gt_mask.shape
+
+                # Patchify image and mask
+                img_patches, coords, full_shape_img = preprocessor.patchify_image(img)
+                mask_patches, _, full_shape_mask = preprocessor.patchify_image(gt_mask)
+
+                self.logger.debug(f"[Visualization {i}] Original img shape: {img.shape}, padded: {full_shape_img}")
+                self.logger.debug(
+                    f"[Visualization {i}] Original mask shape: {gt_mask.shape}, padded: {full_shape_mask}")
+
+                if full_shape_img != full_shape_mask:
+                    self.logger.warning(f"[Visualization {i}] Shape mismatch: {full_shape_img} vs {full_shape_mask}")
+                    continue
+
+                # Predict and reconstruct
                 pred_patches = [segmenter.predict(patch, device=self.device) for patch in img_patches]
-                pred_mask = preprocessor.reconstruct_from_patches(pred_patches, coords, full_shape)
-                save_path: str = os.path.join(self.visualization_dir, f"{prefix}_comparison_{i}.png")
-                Visualizer.save_full_comparison(img, gt_mask, pred_mask, save_path)
-                self.logger.info(f"Saved visualization: {save_path}")
+                pred_mask = preprocessor.reconstruct_from_patches(pred_patches, coords, full_shape_img)
+                gt_mask_padded = preprocessor.reconstruct_from_patches(mask_patches, coords, full_shape_img)
+
+                # Crop both to original shape to avoid mismatch
+                H, W = original_shape
+                pred_mask = pred_mask[:H, :W]
+                gt_mask_padded = gt_mask_padded[:H, :W]
+
+                # Save visualization
+                save_path = os.path.join(self.visualization_dir, f"{prefix}_comparison_{i}.png")
+                Visualizer.save_full_comparison(img, gt_mask_padded, pred_mask, save_path)
+                self.logger.info(f"[Visualization {i}] Saved visualization: {save_path}")
+
             except Exception as e:
-                self.logger.warning(f"Skipping visualization {i} due to error: {e}")
+                self.logger.warning(f"[Visualization {i}] Skipping due to error: {e}")
+
         self.logger.info("Visualization process completed.")
 
     def run(self) -> None:
