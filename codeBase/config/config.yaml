@@ -7,15 +7,15 @@ data:
   processed_dir: data/processed
   batch_size: 1
   num_classes: 6
-  patch_size: 64
+  patch_size: 128
   train_split: 0.8
-  debug_limit: null
+  debug_limit: 5
 
 model:
   name: "Mask2Former"
   pretrained_weights: "facebook/mask2former-swin-small-ade-semantic"
   learning_rate: 1e-4
-  epochs: 30
+  epochs: 1
   freeze_backbone: false
   save_best_only: true
   checkpoint_interval: 5
@@ -27,10 +27,10 @@ augmentation:
   brightness_contrast: 0.2
   gaussian_blur: 0.2
   resized_crop:
-    enable: true
-    height: 64
-    width: 64
-    scale: [ 0.8, 1.0 ]
+    enable: false
+    height: 128
+    width: 128
+    scale: [ 0.5, 0.8]
     p: 0.3
 
 

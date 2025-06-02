@@ -22,10 +22,11 @@ class DataPreprocessor:
         (155, 155, 155): 5    # Unlabeled
     }
 
-    def __init__(self, image_dir: str, mask_dir: str, patch_size: int):
+    def __init__(self, image_dir: str, mask_dir: str, patch_size: int, overlap: int = 0):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.patch_size = patch_size
+        self.overlap = overlap
 
     def rgb_to_class(self, mask_rgb: np.ndarray) -> np.ndarray:
         H, W, _ = mask_rgb.shape

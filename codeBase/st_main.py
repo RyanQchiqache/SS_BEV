@@ -83,21 +83,35 @@ class SegmentationPipeline:
 
     def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
         """
-        Loads and patchifies data, applies augmentations, and prepares data loaders.
+        Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
 
         Returns:
-            Tuple containing training and validation DataLoaders, original val images/masks, and the preprocessor
+            Tuple containing:
+                - train_loader: DataLoader for training patches
+                - val_loader: DataLoader for validation patches
+                - val_imgs: Original validation images (for visualization)
+                - val_masks: Original validation masks (for visualization)
+                - preprocessor: The DataPreprocessor instance used
         """
         self.logger.info("Preparing data...")
-        preprocessor = DataPreprocessor(image_dir=self.image_dir, mask_dir=self.mask_dir, patch_size=self.patch_size)
-        train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
-            train_split=self.config["data"]["train_split"],
-            debug_limit=100
+
+        # Initialize preprocessor
+        preprocessor = DataPreprocessor(
+            image_dir=self.image_dir,
+            mask_dir=self.mask_dir,
+            patch_size=self.patch_size,
+            overlap=0
         )
 
-        # Build augmentation pipeline ON FULL IMAGES
+        # Load and split raw images and masks
+        train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+            train_split=self.config["data"]["train_split"],
+            debug_limit=5 if self.config["data"].get("debug", False) else None
+        )
+
+        # Apply augmentations to full images (optional, before patchifying)
         if self.config.get("augmentation"):
-            train_transform = self.build_augmentation_pipeline(self.config)
+            train_transform = self.build_augmentation_pipeline()
             augmented_imgs, augmented_masks = [], []
             for img, mask in zip(train_imgs, train_masks):
                 augmented = train_transform(image=img, mask=mask)
@@ -105,7 +119,9 @@ class SegmentationPipeline:
                 augmented_masks.append(augmented["mask"])
             train_imgs, train_masks = augmented_imgs, augmented_masks
 
-        def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[List[np.ndarray], List[np.ndarray]]:
+        # Patchify both train and val sets
+        def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[
+            List[np.ndarray], List[np.ndarray]]:
             img_patches: List[np.ndarray] = []
             mask_patches: List[np.ndarray] = []
             for img, mask in zip(imgs, masks):
@@ -118,8 +134,26 @@ class SegmentationPipeline:
         train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
-        self.logger.info(f"Patchified into {len(train_img_patches)} training and {len(val_img_patches)} validation patches.")
-        return train_img_patches, train_mask_patches, val_imgs, val_masks, preprocessor
+        # Wrap into PyTorch datasets
+        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches)
+        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches)
+
+        # Create DataLoaders with collate_fn
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=SatelliteDataset.collate_fn
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            collate_fn=SatelliteDataset.collate_fn
+        )
+
+        self.logger.info(f"Patchified into {len(train_dataset)} training and {len(val_dataset)} validation patches.")
+        return train_loader, val_loader, val_imgs, val_masks, preprocessor
 
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
