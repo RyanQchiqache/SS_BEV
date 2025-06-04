@@ -1,14 +1,16 @@
 import torch
-from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger
 from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-import time
+from typing import Optional, Tuple, List, Union
 
 logger = setup_logger(__name__)
+
 
 class Mask2FormerModel:
     """Wrapper for Mask2Former model to handle initialization, training, evaluation, and inference."""
@@ -40,8 +42,14 @@ class Mask2FormerModel:
         self.backbone_frozen = False
         logger.info("Model and processor initialized successfully.")
 
-    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None,
-                    use_amp=False):
+    def train_model(self,
+                    train_loader: DataLoader,
+                    val_loader: DataLoader,
+                    epochs: int,
+                    lr: float,
+                    device: torch.device = torch.device("cpu"),
+                    tensorboard_writer: Optional[SummaryWriter] = None,
+                    use_amp: bool=False) -> torch.nn.Module:
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
         scaler = GradScaler()
@@ -65,18 +73,24 @@ class Mask2FormerModel:
 
         return self.model
 
-    def _set_model_mode(self, train=True):
+    def _set_model_mode(self, train: bool=True)-> None:
         self.model.train() if train else self.model.eval()
         if train and self.backbone_frozen and hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
             self.model.model.backbone.eval()
 
-    def _process_batch(self, batch, device, use_amp, optimizer, scaler):
+    def _process_batch(self,
+                       batch: Tuple[torch.Tensor, torch.Tensor],
+                       device: torch.device,
+                       use_amp: bool,
+                       optimizer: torch.optim.Optimizer,
+                       scaler: torch.cuda.amp.GradScaler) -> float:
         images, masks = batch
         images_np = [img.permute(1, 2, 0).cpu().numpy() for img in images]
         masks_np = [msk.cpu().numpy() for msk in masks]
 
         batch_inputs = self.processor(images=images_np, segmentation_maps=masks_np, return_tensors="pt")
-        batch_inputs = {k: (v.to(device) if isinstance(v, torch.Tensor) else [i.to(device) for i in v]) for k, v in batch_inputs.items()}
+        batch_inputs = {k: (v.to(device) if isinstance(v, torch.Tensor) else [i.to(device) for i in v]) for k, v in
+                        batch_inputs.items()}
 
         with autocast(enabled=use_amp):
             outputs = self.model(**batch_inputs)
@@ -89,7 +103,12 @@ class Mask2FormerModel:
 
         return loss.item()
 
-    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer):
+    def _log_epoch_results(self,
+                           epoch: int,
+                           total_loss: float,
+                           num_batches: int,
+                           val_loader: DataLoader,
+                           writer: Optional[SummaryWriter]) -> None:
         avg_loss = total_loss / num_batches
         val_miou, per_class_iou = self.evaluate(val_loader)
 
@@ -103,7 +122,7 @@ class Mask2FormerModel:
                 writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
 
     @torch.no_grad()
-    def evaluate(self, data_loader, device=torch.device("cpu")):
+    def evaluate(self, data_loader: DataLoader, device: torch.device=torch.device("cpu"))-> Tuple[float, np.ndarray]:
         logger.info("Evaluating model...")
         self.model.to(device)
         self.model.eval()
@@ -128,7 +147,11 @@ class Mask2FormerModel:
         logger.info(f"Mean IoU: {mean_iou:.4f}")
         return mean_iou, ious
 
-    def _process_eval_batch(self, images, masks, num_classes, device):
+    def _process_eval_batch(self,
+                            images: List[torch.Tensor],
+                            masks: List[torch.Tensor],
+                            num_classes: int,
+                            device: torch.device) -> Tuple[np.ndarray, np.ndarray]:
         images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
         masks_np = [msk.cpu().numpy() for msk in masks]
 
@@ -154,7 +177,7 @@ class Mask2FormerModel:
         return total_intersection, total_union
 
     @torch.no_grad()
-    def predict(self, image, device=torch.device("cpu")):
+    def predict(self, image: Union[np.ndarray, torch.Tensor], device=torch.device("cpu")) -> np.ndarray:
         logger.info("Generating prediction...")
         self.model.to(device)
         self.model.eval()
@@ -176,13 +199,13 @@ class Mask2FormerModel:
         return seg_map.cpu().numpy().astype(np.uint8)
 
     @staticmethod
-    def calculate_mean_iou(intersection, union):
+    def calculate_mean_iou(intersection: np.ndarray, union: np.ndarray)-> Tuple[float, np.ndarray]:
         ious = np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union != 0)
         mean_iou = np.mean(ious) if len(ious) > 0 else 0.0
         return mean_iou, ious
 
     @staticmethod
-    def compute_iou(pred, true, num_classes):
+    def compute_iou(pred: np.ndarray, true: np.ndarray, num_classes:int)-> Tuple[np.ndarray, np.ndarray]:
         intersection = np.zeros(num_classes, dtype=np.int64)
         union = np.zeros(num_classes, dtype=np.int64)
 
