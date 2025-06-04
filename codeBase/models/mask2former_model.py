@@ -4,6 +4,8 @@ from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImagePr
 import numpy as np
 from torch.optim import AdamW
 from codeBase.config.logging_setup import setup_logger
+from torch.cuda.amp import autocast, GradScaler
+import time
 
 logger = setup_logger(__name__)
 
@@ -45,9 +47,10 @@ class Mask2FormerModel:
         self.backbone_frozen = False
         logger.info("Model and processor initialized successfully.")
 
-    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None):
+    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None, use_amp=False):
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
+        scaler = GradScaler()
 
         for epoch in range(1, epochs + 1):
             self.model.train()
@@ -57,8 +60,10 @@ class Mask2FormerModel:
 
             logger.info(f"Starting epoch {epoch}/{epochs}...")
 
-            for batch in train_loader:
+            for batch_idx, batch in enumerate(train_loader):
+                batch_start = time.time()
                 try:
+                    logger.info(f"[Epoch {epoch}] Processing batch {batch_idx + 1}/{len(train_loader)}")
                     images, masks = batch
                     images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
                     masks_np = [msk.cpu().numpy() for msk in masks]
@@ -74,14 +79,20 @@ class Mask2FormerModel:
                         elif isinstance(v, list) and all(isinstance(i, torch.Tensor) for i in v):
                             batch_inputs[k] = [i.to(device) for i in v]
 
-                    outputs = self.model(**batch_inputs)
-                    loss = outputs.loss
+                    start = time.time()
+                    with autocast(enabled=use_amp):
+                        outputs = self.model(**batch_inputs)
+                        logger.info(f"Forward pass time: {time.time() - start:.2f} seconds")
+                        loss = outputs.loss
 
                     optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
+                    scaler.scale(loss).backward()
+                    scaler.step(optimizer)
+                    scaler.update()
 
                     total_loss += loss.item()
+                    logger.info(
+                        f"[Epoch {epoch}] Batch {batch_idx + 1} completed in {time.time() - batch_start:.2f} seconds")
 
                 except Exception as e:
                     logger.warning(f"Error processing batch: {e}")
@@ -118,7 +129,8 @@ class Mask2FormerModel:
         total_union = np.zeros(num_classes, dtype=np.int64)
 
         with torch.no_grad():
-            for images, masks in data_loader:
+            for batch_idx, (images, masks) in enumerate(data_loader):
+                logger.info(f"Evaluating batch {batch_idx + 1}/{len(data_loader)}")
                 try:
                     images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
                     masks_np = [msk.cpu().numpy() for msk in masks]

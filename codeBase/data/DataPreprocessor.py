@@ -22,10 +22,11 @@ class DataPreprocessor:
         (155, 155, 155): 5    # Unlabeled
     }
 
-    def __init__(self, image_dir: str, mask_dir: str, patch_size: int):
+    def __init__(self, image_dir: str, mask_dir: str, patch_size: int, overlap: int = 0):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.patch_size = patch_size
+        self.overlap = overlap
 
     def rgb_to_class(self, mask_rgb: np.ndarray) -> np.ndarray:
         H, W, _ = mask_rgb.shape
@@ -114,34 +115,32 @@ class DataPreprocessor:
         return canvas.astype(patches[0].dtype)
 
     def prepare_data(self, train_split: float = 0.8, debug_limit: int = None):
+        def load_image_and_mask(image_name, mask_name):
+            image_path = os.path.join(self.image_dir, image_name)
+            mask_path = os.path.join(self.mask_dir, mask_name)
+
+            image = np.array(Image.open(image_path).convert("RGB"))
+            mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
+            mask = self.rgb_to_class(mask_rgb)
+
+            return image, mask
         image_files = sorted(os.listdir(self.image_dir))
         mask_files = sorted(os.listdir(self.mask_dir))
 
         assert len(image_files) == len(mask_files), "Mismatch between images and masks"
 
-        total_images = len(image_files)
-        split_idx = int(train_split * total_images)
+        combined = list(zip(image_files, mask_files))
+        np.random.shuffle(combined)
 
-        train_imgs, train_masks = [], []
-        val_imgs, val_masks = [], []
+        # split into training and validation sets
+        total = len(combined)
+        split_idx = int(train_split * total)
+        train_pairs = combined[:split_idx]
+        val_pairs = combined[split_idx:]
 
-        for idx in range(split_idx):
-            img_join = os.path.join(self.image_dir, image_files[idx])
-            img = np.array(Image.open(img_join).convert("RGB"))
-            mask_join = os.path.join(self.mask_dir, mask_files[idx])
-            mask_rgb = np.array(Image.open(mask_join).convert("RGB"))
-            mask = self.rgb_to_class(mask_rgb)
-
-            train_imgs.append(img)
-            train_masks.append(mask)
-
-        for idx in range(split_idx, total_images):
-            img = np.array(Image.open(os.path.join(self.image_dir, image_files[idx])).convert("RGB"))
-            mask_rgb = np.array(Image.open(os.path.join(self.mask_dir, mask_files[idx])).convert("RGB"))
-            mask = self.rgb_to_class(mask_rgb)
-
-            val_imgs.append(img)
-            val_masks.append(mask)
+        # load image and mask data
+        train_imgs, train_masks = zip(*[load_image_and_mask(img, mask) for img, mask in train_pairs])
+        val_imgs, val_masks = zip(*[load_image_and_mask(img, mask) for img, mask in val_pairs])
 
         if debug_limit is not None:
             train_imgs = train_imgs[:debug_limit]
@@ -149,5 +148,5 @@ class DataPreprocessor:
             val_imgs = val_imgs[:debug_limit]
             val_masks = val_masks[:debug_limit]
 
-        return train_imgs, train_masks, val_imgs, val_masks
+        return list(train_imgs), list(train_masks), list(val_imgs), list(val_masks)
 
