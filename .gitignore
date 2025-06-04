@@ -22,4 +22,4 @@ SS_data
 logs/
 
 # Output files
-outputs/
+codeBase/old_outputs/

@@ -1,8 +1,12 @@
 import torch
+from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
 from codeBase.config.logging_setup import setup_logger
+from torch.cuda.amp import autocast, GradScaler
+from tqdm import tqdm
+import time
 
 logger = setup_logger(__name__)
 
@@ -13,14 +17,6 @@ class Mask2FormerModel:
                  model_name: str = "facebook/mask2former-swin-small-ade-semantic",
                  num_classes: int = 6,
                  class_names: list = None):
-        """
-        Initialize the Mask2Former model for universal segmentation.
-
-        Parameters:
-            model_name (str): Name of the pretrained model from Hugging Face.
-            num_classes (int): Number of segmentation classes.
-            class_names (list): Optional list of class names. If not provided, uses default.
-        """
         logger.info("Loading image processor and model...")
         self.processor = Mask2FormerImageProcessor.from_pretrained(
             model_name,
@@ -44,69 +40,69 @@ class Mask2FormerModel:
         self.backbone_frozen = False
         logger.info("Model and processor initialized successfully.")
 
-    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None):
+    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None,
+                    use_amp=False):
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
+        scaler = GradScaler()
 
         for epoch in range(1, epochs + 1):
-            self.model.train()
-            if self.backbone_frozen and hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
-                self.model.model.backbone.eval()
+            self._set_model_mode(train=True)
             total_loss = 0.0
 
             logger.info(f"Starting epoch {epoch}/{epochs}...")
 
-            for batch in train_loader:
+            for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
                 try:
-                    images, masks = batch
-                    images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
-                    masks_np = [msk.cpu().numpy() for msk in masks]
-
-                    batch_inputs = self.processor(
-                        images=images_np,
-                        segmentation_maps=masks_np,
-                        return_tensors="pt"
-                    )
-                    for k, v in batch_inputs.items():
-                        if isinstance(v, torch.Tensor):
-                            batch_inputs[k] = v.to(device)
-                        elif isinstance(v, list) and all(isinstance(i, torch.Tensor) for i in v):
-                            batch_inputs[k] = [i.to(device) for i in v]
-
-                    outputs = self.model(**batch_inputs)
-                    loss = outputs.loss
-
-                    optimizer.zero_grad()
-                    loss.backward()
-                    optimizer.step()
-
-                    total_loss += loss.item()
-
+                    loss = self._process_batch(batch, device, use_amp, optimizer, scaler)
+                    total_loss += loss
+                    logger.info(f"[Epoch {epoch}] Batch {batch_idx + 1}/{len(train_loader)} processed.")
                 except Exception as e:
                     logger.warning(f"Error processing batch: {e}")
                     torch.cuda.empty_cache()
-                    continue
 
-            avg_loss = total_loss / len(train_loader)
-            val_miou, per_class_iou = self.evaluate(val_loader, device=device)
-
-            logger.info(
-                f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}, Per-class IoU: {per_class_iou}")
-
-            if tensorboard_writer:
-                tensorboard_writer.add_scalar("Loss/train", avg_loss, epoch)
-                tensorboard_writer.add_scalar("IoU/val", val_miou, epoch)
-                for cls_idx, cls_iou in enumerate(per_class_iou):
-                    tensorboard_writer.add_scalar(f"IoU/Class_{cls_idx}", cls_iou, epoch)
+            self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer)
 
         return self.model
 
-    @staticmethod
-    def calculate_mean_iou(intersection, union):
-        ious = np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union != 0)
-        mean_iou = np.mean(ious) if len(ious) > 0 else 0.0
-        return mean_iou, ious
+    def _set_model_mode(self, train=True):
+        self.model.train() if train else self.model.eval()
+        if train and self.backbone_frozen and hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
+            self.model.model.backbone.eval()
 
+    def _process_batch(self, batch, device, use_amp, optimizer, scaler):
+        images, masks = batch
+        images_np = [img.permute(1, 2, 0).cpu().numpy() for img in images]
+        masks_np = [msk.cpu().numpy() for msk in masks]
+
+        batch_inputs = self.processor(images=images_np, segmentation_maps=masks_np, return_tensors="pt")
+        batch_inputs = {k: (v.to(device) if isinstance(v, torch.Tensor) else [i.to(device) for i in v]) for k, v in batch_inputs.items()}
+
+        with autocast(enabled=use_amp):
+            outputs = self.model(**batch_inputs)
+            loss = outputs.loss
+
+        optimizer.zero_grad()
+        scaler.scale(loss).backward()
+        scaler.step(optimizer)
+        scaler.update()
+
+        return loss.item()
+
+    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer):
+        avg_loss = total_loss / num_batches
+        val_miou, per_class_iou = self.evaluate(val_loader)
+
+        logger.info(
+            f"Epoch {epoch}: Train Loss = {avg_loss:.4f}, Val mIoU = {val_miou:.4f}, Per-class IoU: {per_class_iou}")
+
+        if writer:
+            writer.add_scalar("Loss/Total", avg_loss, epoch)
+            writer.add_scalar("IoU/val", val_miou, epoch)
+            for idx, iou in enumerate(per_class_iou):
+                writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
+
+    @torch.no_grad()
     def evaluate(self, data_loader, device=torch.device("cpu")):
         logger.info("Evaluating model...")
         self.model.to(device)
@@ -117,37 +113,47 @@ class Mask2FormerModel:
         total_union = np.zeros(num_classes, dtype=np.int64)
 
         with torch.no_grad():
-            for images, masks in data_loader:
+            for batch_idx, (images, masks) in tqdm(enumerate(data_loader), total=len(data_loader)):
+                logger.info(f"Evaluating batch {batch_idx + 1}/{len(data_loader)}")
                 try:
-                    images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
-                    masks_np = [msk.cpu().numpy() for msk in masks]
-
-                    batch_inputs = self.processor(images=images_np, return_tensors="pt")
-                    batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
-                    outputs = self.model(**batch_inputs)
-
-                    seg_maps = self.processor.post_process_semantic_segmentation(
-                        outputs, target_sizes=[mask.shape[:2] for mask in masks_np]
-                    )
-
-                    for pred_mask, true_mask in zip(seg_maps, masks_np):
-                        pred_arr = pred_mask.cpu().numpy().astype(np.uint8)
-                        true_arr = true_mask.astype(np.uint8)
-
-                        intersection, union = Mask2FormerModel.compute_iou(pred_arr, true_arr, num_classes)
-                        total_intersection += intersection
-                        total_union += union
-
+                    intersection, union = self._process_eval_batch(images, masks, num_classes, device)
+                    total_intersection += intersection
+                    total_union += union
                 except Exception as e:
                     logger.warning(f"Error during evaluation: {e}")
                     torch.cuda.empty_cache()
-                    continue
 
         mean_iou, ious = Mask2FormerModel.calculate_mean_iou(total_intersection, total_union)
         logger.info(f"Per-class IoU: {ious}")
         logger.info(f"Mean IoU: {mean_iou:.4f}")
         return mean_iou, ious
 
+    def _process_eval_batch(self, images, masks, num_classes, device):
+        images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
+        masks_np = [msk.cpu().numpy() for msk in masks]
+
+        batch_inputs = self.processor(images=images_np, return_tensors="pt")
+        batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
+        outputs = self.model(**batch_inputs)
+
+        seg_maps = self.processor.post_process_semantic_segmentation(
+            outputs, target_sizes=[mask.shape[:2] for mask in masks_np]
+        )
+
+        total_intersection = np.zeros(num_classes, dtype=np.int64)
+        total_union = np.zeros(num_classes, dtype=np.int64)
+
+        for pred_mask, true_mask in zip(seg_maps, masks_np):
+            pred_arr = pred_mask.cpu().numpy().astype(np.uint8)
+            true_arr = true_mask.astype(np.uint8)
+
+            intersection, union = Mask2FormerModel.compute_iou(pred_arr, true_arr, num_classes)
+            total_intersection += intersection
+            total_union += union
+
+        return total_intersection, total_union
+
+    @torch.no_grad()
     def predict(self, image, device=torch.device("cpu")):
         logger.info("Generating prediction...")
         self.model.to(device)
@@ -168,6 +174,12 @@ class Mask2FormerModel:
         )[0]
 
         return seg_map.cpu().numpy().astype(np.uint8)
+
+    @staticmethod
+    def calculate_mean_iou(intersection, union):
+        ious = np.divide(intersection, union, out=np.zeros_like(intersection, dtype=float), where=union != 0)
+        mean_iou = np.mean(ious) if len(ious) > 0 else 0.0
+        return mean_iou, ious
 
     @staticmethod
     def compute_iou(pred, true, num_classes):

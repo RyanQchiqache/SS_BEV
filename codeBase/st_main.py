@@ -1,128 +1,274 @@
 import os
 import torch
 import numpy as np
-from torchvision import transforms
-from torch.utils.data import DataLoader, TensorDataset
+import albumentations as A
+from typing import List, Tuple
+from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from codeBase.config.logging_setup import setup_logger
-from codeBase.config.logging_setup import load_config
-
-
+from codeBase.config.logging_setup import setup_logger, load_config
 from codeBase.data.DataPreprocessor import DataPreprocessor
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
+from codeBase.data.satelite_dataset import SatelliteDataset
+from datetime import datetime
 
-config = load_config()
+class SegmentationPipeline:
+    """
+    A complete pipeline for semantic segmentation using Mask2Former on aerial imagery.
+    Handles data preprocessing, augmentation, training, evaluation, and visualization.
+    """
+    def __init__(self) -> None:
+        """Initializes the pipeline by loading configuration and setting up paths, logging, and randomness."""
+        self.config = load_config()
 
-torch.manual_seed(42)
-np.random.seed(42)
+        torch.manual_seed(42)
+        np.random.seed(42)
 
-image_dir = config["data"]["images_dir"]
-mask_dir = config["data"]["masks_dir"]
-patch_size = int(config["data"]["patch_size"])
-batch_size = int(config["data"]["batch_size"])
-num_classes = int(config["data"]["num_classes"])
-epochs = int(config["model"]["epochs"])
-learning_rate = float(config["model"]["learning_rate"])
-pretrained_weights = config["model"]["pretrained_weights"]
+        self.image_dir: str = self.config["data"]["images_dir"]
+        self.mask_dir: str = self.config["data"]["masks_dir"]
+        self.patch_size: int = int(self.config["data"]["patch_size"])
+        self.batch_size: int = int(self.config["data"]["batch_size"])
+        self.num_classes: int = int(self.config["data"]["num_classes"])
+        self.epochs: int = int(self.config["model"]["epochs"])
+        self.learning_rate: float = float(self.config["model"]["learning_rate"])
+        self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.use_amp: bool = self.config["training"].get("amp", False)
 
-output_dir = config["paths"]["output_dir"]
-model_save_dir = config["paths"]["model_save_dir"]
-visualization_dir = config["paths"]["visualization_dir"]
-logs_dir = config["paths"]["logs_dir"]
-tensorboard_dir = os.path.join(logs_dir, "tensorboard")
+        base_output_dir = self.config["paths"]["base_output_dir"]
+        run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        self.run_dir = os.path.join(base_output_dir, run_name)
+
+        self.model_save_dir = os.path.join(self.run_dir, self.config["paths"]["checkpoint_subdir"])
+        self.visualization_dir = os.path.join(self.run_dir, self.config["paths"]["visualization_subdir"])
+        self.logs_dir = os.path.join(self.run_dir, self.config["paths"]["logs_subdir"])
+        self.tensorboard_dir = os.path.join(self.run_dir, self.config["paths"]["tensorboard_subdir"])
+
+        self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        print(f"Using device: {self.device}")
+
+        for dir_path in [self.run_dir, self.model_save_dir, self.visualization_dir, self.logs_dir,
+                         self.tensorboard_dir]:
+            os.makedirs(dir_path, exist_ok=True)
+
+        self.logger = setup_logger(__name__)
+        self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
+    def build_augmentation_pipeline(self) -> A.Compose:
+        """
+        Builds the Albumentations data augmentation pipeline based on configuration.
+
+        Returns:
+            A.Compose: Albumentations augmentation pipeline
+        """
+        aug_cfg = self.config["augmentation"]
+        transforms_list = []
+
+        if aug_cfg.get("horizontal_flip", 0) > 0:
+            transforms_list.append(A.HorizontalFlip(p=aug_cfg["horizontal_flip"]))
+        if aug_cfg.get("vertical_flip", 0) > 0:
+            transforms_list.append(A.VerticalFlip(p=aug_cfg["vertical_flip"]))
+        if aug_cfg.get("rotate_90", 0) > 0:
+            transforms_list.append(A.RandomRotate90(p=aug_cfg["rotate_90"]))
+        if aug_cfg.get("brightness_contrast", 0) > 0:
+            transforms_list.append(A.RandomBrightnessContrast(p=aug_cfg["brightness_contrast"]))
+        if aug_cfg.get("gaussian_blur", 0) > 0:
+            transforms_list.append(A.GaussianBlur(p=aug_cfg["gaussian_blur"]))
+
+        if aug_cfg.get("resized_crop", {}).get("enable", False):
+            crop = aug_cfg["resized_crop"]
+            transforms_list.append(
+                A.RandomResizedCrop(
+                    height=crop["height"],
+                    width=crop["width"],
+                    scale=tuple(crop["scale"]),
+                    p=crop["p"]
+                )
+            )
+
+        return A.Compose(transforms_list, additional_targets={"mask": "mask"})
+
+    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
+        """
+        Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
+
+        Returns:
+            Tuple containing:
+                - train_loader: DataLoader for training patches
+                - val_loader: DataLoader for validation patches
+                - val_imgs: Original validation images (for visualization)
+                - val_masks: Original validation masks (for visualization)
+                - preprocessor: The DataPreprocessor instance used
+        """
+        self.logger.info("Preparing data...")
+
+        # Initialize preprocessor
+        preprocessor = DataPreprocessor(
+            image_dir=self.image_dir,
+            mask_dir=self.mask_dir,
+            patch_size=self.patch_size,
+            overlap=0
+        )
+
+        debug = self.config["data"].get("debug", False)
+        debug_limit = self.config["data"].get("debug_limit", None) if debug else None
+        train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+            train_split=self.config["data"]["train_split"],
+            debug_limit=debug_limit
+        )
+
+        # Apply augmentations to full images (optional, before patchifying)
+        if self.config.get("augmentation"):
+            train_transform = self.build_augmentation_pipeline()
+            augmented_imgs, augmented_masks = [], []
+            for img, mask in zip(train_imgs, train_masks):
+                augmented = train_transform(image=img, mask=mask)
+                augmented_imgs.append(augmented["image"])
+                augmented_masks.append(augmented["mask"])
+            train_imgs, train_masks = augmented_imgs, augmented_masks
+
+        # Patchify both train and val sets
+        def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[
+            List[np.ndarray], List[np.ndarray]]:
+            img_patches: List[np.ndarray] = []
+            mask_patches: List[np.ndarray] = []
+            for img, mask in zip(imgs, masks):
+                img_p, _, _ = preprocessor.patchify_image(img)
+                mask_p, _, _ = preprocessor.patchify_image(mask)
+                img_patches.extend(img_p)
+                mask_patches.extend(mask_p)
+            return img_patches, mask_patches
+
+        train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
+        val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
+
+        # Wrap into PyTorch datasets
+        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches)
+        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches)
+
+        # Create DataLoaders with collate_fn
+        train_loader = DataLoader(
+            train_dataset,
+            batch_size=self.batch_size,
+            shuffle=True,
+            collate_fn=SatelliteDataset.collate_fn
+        )
+        val_loader = DataLoader(
+            val_dataset,
+            batch_size=self.batch_size,
+            shuffle=False,
+            collate_fn=SatelliteDataset.collate_fn
+        )
+
+        self.logger.info(f"Patchified into {len(train_dataset)} training and {len(val_dataset)} validation patches.")
+        return train_loader, val_loader, val_imgs, val_masks, preprocessor
 
 
-# CUDA setup
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(f"Using device: {device}")
+    def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
+        """
+        Initializes and trains the segmentation model.
 
-for dir_path in [output_dir, model_save_dir, visualization_dir, logs_dir, tensorboard_dir]:
-    os.makedirs(dir_path, exist_ok=True)
+        Args:
+            train_loader: DataLoader for training data
+            val_loader: DataLoader for validation data
 
-logger = setup_logger(__name__)
-writer = SummaryWriter(log_dir=tensorboard_dir)
+        Returns:
+            Trained Mask2FormerModel instance
+        """
+        self.logger.info("Initializing and training model...")
+        segmenter = Mask2FormerModel(model_name=self.pretrained_weights, num_classes=self.num_classes)
 
-def prepare_data():
-    logger.info("Preparing data...")
-    preprocessor = DataPreprocessor(image_dir=image_dir, mask_dir=mask_dir, patch_size=patch_size)
-    train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
-        train_split=config["data"]["train_split"],
-        debug_limit=100
-    )
-    logger.info(f"Loaded {len(train_imgs)} training and {len(val_imgs)} validation samples.")
-    return train_imgs, train_masks, val_imgs, val_masks
+        trained_model = segmenter.train_model(
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=self.epochs,
+            lr=self.learning_rate,
+            device=self.device,
+            tensorboard_writer=self.writer,
+            use_amp=self.use_amp
+        )
 
-def create_dataloaders(train_imgs, train_masks, val_imgs, val_masks):
-    logger.info("Creating data loaders...")
+        model_path: str = os.path.join(self.model_save_dir, "trained_model.pth")
+        torch.save(trained_model.state_dict(), model_path)
+        self.logger.info(f"Model saved to {model_path}")
+        return segmenter
 
-    transform = transforms.Compose([
-        transforms.ToTensor(),
-    ])
+    def evaluate(self, segmenter: Mask2FormerModel, val_loader: DataLoader) -> None:
+        """
+        Evaluates the model on validation set using standard metrics.
 
-    train_tensors = [(transform(img), torch.tensor(mask).long()) for img, mask in zip(train_imgs, train_masks)]
-    val_tensors = [(transform(img), torch.tensor(mask).long()) for img, mask in zip(val_imgs, val_masks)]
+        Args:
+            segmenter: Trained segmentation model
+            val_loader: Validation DataLoader
+        """
+        self.logger.info("Evaluating model...")
+        mean_iou, per_class_iou = segmenter.evaluate(val_loader, device=self.device)
+        self.logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
 
-    train_loader = DataLoader(train_tensors, batch_size=batch_size, shuffle=True)
-    val_loader = DataLoader(val_tensors, batch_size=batch_size, shuffle=False)
+    def visualize(
+            self,
+            segmenter: Mask2FormerModel,
+            val_imgs: List[np.ndarray],
+            val_masks: List[np.ndarray],
+            preprocessor: DataPreprocessor,
+            prefix: str = "prediction"
+    ) -> None:
+        """
+        Visualizes predictions by reconstructing full images from predicted patches.
 
-    logger.info("Data loaders created.")
-    return train_loader, val_loader
+        Args:
+            segmenter: Trained segmentation model
+            val_imgs: List of original validation images
+            val_masks: List of original validation masks
+            preprocessor: DataPreprocessor instance used for patchification/reconstruction
+            prefix: Prefix for saving visualization filenames
+        """
+        self.logger.info(f"Generating visualizations with prefix '{prefix}'")
 
+        for i in range(min(3, len(val_imgs))):
+            try:
+                img = val_imgs[i]
+                gt_mask = val_masks[i]
+                original_shape = gt_mask.shape
 
-def train_model(train_loader, val_loader):
-    logger.info("Initializing and training model...")
-    segmenter = Mask2FormerModel(model_name=pretrained_weights, num_classes=num_classes)
+                img_patches, coords, full_shape_img = preprocessor.patchify_image(img)
+                mask_patches, _, full_shape_mask = preprocessor.patchify_image(gt_mask)
 
-    trained_model = segmenter.train_model(
-        train_loader=train_loader,
-        val_loader=val_loader,
-        epochs=epochs,
-        lr=learning_rate,
-        device=device,
-        tensorboard_writer=writer,
-    )
+                self.logger.debug(f"[Visualization {i}] Original img shape: {img.shape}, padded: {full_shape_img}")
+                self.logger.debug(
+                    f"[Visualization {i}] Original mask shape: {gt_mask.shape}, padded: {full_shape_mask}")
 
-    model_path = os.path.join(model_save_dir, "trained_model.pth")
-    torch.save(trained_model.state_dict(), model_path)
-    logger.info(f"Model saved to {model_path}")
-    return segmenter
+                if full_shape_img != full_shape_mask:
+                    self.logger.warning(f"[Visualization {i}] Shape mismatch: {full_shape_img} vs {full_shape_mask}")
+                    continue
 
-def evaluate_model(segmenter, val_loader):
-    print("[INFO] Evaluating model on validation data...")
-    logger.info("Evaluating model...")
-    mean_iou, per_class_iou = segmenter.evaluate(val_loader, device=device)
-    logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
+                # Predict and reconstruct
+                pred_patches = [segmenter.predict(patch, device=self.device) for patch in img_patches]
+                pred_mask = preprocessor.reconstruct_from_patches(pred_patches, coords, full_shape_img)
+                gt_mask_padded = preprocessor.reconstruct_from_patches(mask_patches, coords, full_shape_img)
 
-def visualize_predictions(segmenter, val_imgs, val_masks, prefix="prediction"):
-    logger.info(f"Generating visualizations with prefix '{prefix}'")
-    for i in range(min(3, len(val_imgs))):
-        try:
-            logger.info(f"Processing visualization {i + 1} of {min(3, len(val_imgs))}...")
-            img = val_imgs[i]
-            gt_mask = val_masks[i]
-            logger.info(f"Image shape: {img.shape}, Ground truth shape: {gt_mask.shape}")
+                # Crop both to original shape to avoid mismatch
+                H, W = original_shape
+                pred_mask = pred_mask[:H, :W]
+                gt_mask_padded = gt_mask_padded[:H, :W]
 
-            pred_mask = segmenter.predict(img, device=device)
+                # Save visualization
+                save_path = os.path.join(self.visualization_dir, f"{prefix}_comparison_{i}.png")
+                Visualizer.save_full_comparison(img, gt_mask_padded, pred_mask, save_path)
+                self.logger.info(f"[Visualization {i}] Saved visualization: {save_path}")
 
-            save_path = os.path.join(visualization_dir, f"{prefix}_comparison_{i}.png")
-            Visualizer.save_full_comparison(img, gt_mask, pred_mask, save_path)
-            logger.info(f"Saved visualization: {save_path}")
-        except Exception as e:
-            logger.warning(f"Skipping visualization {i} due to error: {e}")
-    logger.info("Visualization process completed.")
+            except Exception as e:
+                self.logger.warning(f"[Visualization {i}] Skipping due to error: {e}")
 
+        self.logger.info("Visualization process completed.")
+
+    def run(self) -> None:
+        """Executes the full training and evaluation workflow."""
+        train_loader, val_loader, val_imgs, val_masks, preprocessor = self.prepare_data()
+        segmenter = self.train(train_loader, val_loader)
+        self.evaluate(segmenter, val_loader)
+        self.visualize(segmenter, val_imgs, val_masks, preprocessor, prefix="trained")
+        self.writer.close()
+        self.logger.info("Workflow completed.")
 
 if __name__ == "__main__":
-    train_imgs, train_masks, val_imgs, val_masks = prepare_data()
-    train_loader, val_loader = create_dataloaders(train_imgs, train_masks, val_imgs, val_masks)
-    segmenter = train_model(train_loader, val_loader)
-    evaluate_model(segmenter, val_loader)
-    visualize_predictions(
-        segmenter,
-        val_imgs,
-        val_masks,
-        prefix="trained"
-    )
-    writer.close()
-    logger.info("Workflow completed.")
+    pipeline = SegmentationPipeline()
+    pipeline.run()

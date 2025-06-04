@@ -2,39 +2,57 @@ project_name: Mask2Former Aerial Segmentation
 
 data:
   raw_dir: SS_data
-  images_dir: /home/ryqi/PycharmProjects/SS_BEV/SS_data/images
-  masks_dir: /home/ryqi/PycharmProjects/SS_BEV/SS_data/masks
+  images_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/images
+  masks_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/masks
   processed_dir: data/processed
   batch_size: 1
   num_classes: 6
   patch_size: 64
   train_split: 0.8
-  debug_limit: null
+  debug : true
+  debug_limit: 1
 
 model:
   name: "Mask2Former"
   pretrained_weights: "facebook/mask2former-swin-small-ade-semantic"
   learning_rate: 1e-4
-  epochs: 30
+  epochs: 1
   freeze_backbone: false
   save_best_only: true
   checkpoint_interval: 5
+
+augmentation:
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
+  rotate_90: 0.5
+  brightness_contrast: 0.2
+  gaussian_blur: 0.2
+  resized_crop:
+    enable: false
+    height: 128
+    width: 128
+    scale: [ 0.5, 0.8]
+    p: 0.3
+
 
 training:
   optimizer: AdamW
   loss_function: cross_entropy
   device: cuda
+  amp: true
   gradient_clipping: 1.0
   early_stopping: true
   early_stopping_patience: 5
 
 paths:
-  output_dir: outputs
-  model_save_dir: outputs/models
-  visualization_dir: outputs/visualizations
-  logs_dir: logs
-  checkpoint_path: outputs/models/checkpoints
-  best_model_path: outputs/models/best_model.pth
+  base_output_dir: outputs
+  run_name: 20240604_mask2former_kaggle
+  logs_subdir: logs
+  tensorboard_subdir: tensorboard
+  checkpoint_subdir: checkpoints
+  visualization_subdir: visualizations
+  test_results_subdir: test_results
+
 
 visualization:
   show_masks: true
@@ -48,5 +66,5 @@ logging:
 
 testing:
   test_batch_size: 2
-  test_results_dir: outputs/test_results
+  test_results_dir: old_outputs/test_results
   evaluation_metrics: [mIoU, accuracy, precision, recall]
