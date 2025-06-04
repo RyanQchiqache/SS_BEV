@@ -57,6 +57,6 @@ def test_segmentation_pipeline_end_to_end(monkeypatch, dummy_config, tmp_path):
     pipeline = SegmentationPipeline()
     pipeline.run()
 
-    # Check expected outputs
+    # Check expected old_outputs
     assert (Path(dummy_config["paths"]["model_save_dir"]) / "trained_model.pth").exists()
     assert any(Path(dummy_config["paths"]["visualization_dir"]).glob("*.png")), "No visualizations generated"
