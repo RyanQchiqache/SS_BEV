@@ -47,7 +47,7 @@ class Mask2FormerModel:
         self.backbone_frozen = False
         logger.info("Model and processor initialized successfully.")
 
-    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None):
+    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None, use_amp=False):
         self.model.to(device)
         optimizer = AdamW(self.model.parameters(), lr=lr)
         scaler = GradScaler()
@@ -80,7 +80,7 @@ class Mask2FormerModel:
                             batch_inputs[k] = [i.to(device) for i in v]
 
                     start = time.time()
-                    with autocast():
+                    with autocast(enabled=use_amp):
                         outputs = self.model(**batch_inputs)
                         logger.info(f"Forward pass time: {time.time() - start:.2f} seconds")
                         loss = outputs.loss
