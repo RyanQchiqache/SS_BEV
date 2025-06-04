@@ -31,12 +31,14 @@ class SegmentationPipeline:
         self.epochs: int = int(self.config["model"]["epochs"])
         self.learning_rate: float = float(self.config["model"]["learning_rate"])
         self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.use_amp: bool = self.config["training"].get("amp", False)
 
         self.output_dir: str = self.config["paths"]["output_dir"]
         self.model_save_dir: str = self.config["paths"]["model_save_dir"]
         self.visualization_dir: str = self.config["paths"]["visualization_dir"]
         self.logs_dir: str = self.config["paths"]["logs_dir"]
         self.tensorboard_dir: str = os.path.join(self.logs_dir, "tensorboard")
+
 
         self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
@@ -177,6 +179,7 @@ class SegmentationPipeline:
             lr=self.learning_rate,
             device=self.device,
             tensorboard_writer=self.writer,
+            use_amp=self.use_amp
         )
 
         model_path: str = os.path.join(self.model_save_dir, "trained_model.pth")
@@ -222,7 +225,6 @@ class SegmentationPipeline:
                 gt_mask = val_masks[i]
                 original_shape = gt_mask.shape
 
-                # Patchify image and mask
                 img_patches, coords, full_shape_img = preprocessor.patchify_image(img)
                 mask_patches, _, full_shape_mask = preprocessor.patchify_image(gt_mask)
 
