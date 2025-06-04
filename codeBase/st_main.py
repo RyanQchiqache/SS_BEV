@@ -10,6 +10,7 @@ from codeBase.data.DataPreprocessor import DataPreprocessor
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
 from codeBase.data.satelite_dataset import SatelliteDataset
+from datetime import datetime
 
 class SegmentationPipeline:
     """
@@ -33,17 +34,20 @@ class SegmentationPipeline:
         self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
         self.use_amp: bool = self.config["training"].get("amp", False)
 
-        self.output_dir: str = self.config["paths"]["output_dir"]
-        self.model_save_dir: str = self.config["paths"]["model_save_dir"]
-        self.visualization_dir: str = self.config["paths"]["visualization_dir"]
-        self.logs_dir: str = self.config["paths"]["logs_dir"]
-        self.tensorboard_dir: str = os.path.join(self.logs_dir, "tensorboard")
+        base_output_dir = self.config["paths"]["base_output_dir"]
+        run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
+        self.run_dir = os.path.join(base_output_dir, run_name)
 
+        self.model_save_dir = os.path.join(self.run_dir, self.config["paths"]["checkpoint_subdir"])
+        self.visualization_dir = os.path.join(self.run_dir, self.config["paths"]["visualization_subdir"])
+        self.logs_dir = os.path.join(self.run_dir, self.config["paths"]["logs_subdir"])
+        self.tensorboard_dir = os.path.join(self.run_dir, self.config["paths"]["tensorboard_subdir"])
 
         self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"Using device: {self.device}")
 
-        for dir_path in [self.output_dir, self.model_save_dir, self.visualization_dir, self.logs_dir, self.tensorboard_dir]:
+        for dir_path in [self.run_dir, self.model_save_dir, self.visualization_dir, self.logs_dir,
+                         self.tensorboard_dir]:
             os.makedirs(dir_path, exist_ok=True)
 
         self.logger = setup_logger(__name__)
