@@ -112,16 +112,15 @@ class Mask2FormerModel:
         total_intersection = np.zeros(num_classes, dtype=np.int64)
         total_union = np.zeros(num_classes, dtype=np.int64)
 
-        with torch.no_grad():
-            for batch_idx, (images, masks) in tqdm(enumerate(data_loader), total=len(data_loader)):
-                logger.info(f"Evaluating batch {batch_idx + 1}/{len(data_loader)}")
-                try:
-                    intersection, union = self._process_eval_batch(images, masks, num_classes, device)
-                    total_intersection += intersection
-                    total_union += union
-                except Exception as e:
-                    logger.warning(f"Error during evaluation: {e}")
-                    torch.cuda.empty_cache()
+        for batch_idx, (images, masks) in tqdm(enumerate(data_loader), total=len(data_loader)):
+            logger.info(f"Evaluating batch {batch_idx + 1}/{len(data_loader)}")
+            try:
+                intersection, union = self._process_eval_batch(images, masks, num_classes, device)
+                total_intersection += intersection
+                total_union += union
+            except Exception as e:
+                logger.warning(f"Error during evaluation: {e}")
+                torch.cuda.empty_cache()
 
         mean_iou, ious = Mask2FormerModel.calculate_mean_iou(total_intersection, total_union)
         logger.info(f"Per-class IoU: {ious}")

@@ -233,8 +233,7 @@ class SegmentationPipeline:
                 mask_patches, _, full_shape_mask = preprocessor.patchify_image(gt_mask)
 
                 self.logger.debug(f"[Visualization {i}] Original img shape: {img.shape}, padded: {full_shape_img}")
-                self.logger.debug(
-                    f"[Visualization {i}] Original mask shape: {gt_mask.shape}, padded: {full_shape_mask}")
+                self.logger.debug(f"[Visualization {i}] Original mask shape: {gt_mask.shape}, padded: {full_shape_mask}")
 
                 if full_shape_img != full_shape_mask:
                     self.logger.warning(f"[Visualization {i}] Shape mismatch: {full_shape_img} vs {full_shape_mask}")
