@@ -11,6 +11,7 @@ from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
 from codeBase.data.satelite_dataset import SatelliteDataset
 from datetime import datetime
+from accelerate import Accelerator
 
 class SegmentationPipeline:
     """
@@ -32,7 +33,6 @@ class SegmentationPipeline:
         self.epochs: int = int(self.config["model"]["epochs"])
         self.learning_rate: float = float(self.config["model"]["learning_rate"])
         self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
-        self.use_amp: bool = self.config["training"].get("amp", False)
 
         base_output_dir = self.config["paths"]["base_output_dir"]
         run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -43,7 +43,11 @@ class SegmentationPipeline:
         self.logs_dir = os.path.join(self.run_dir, self.config["paths"]["logs_subdir"])
         self.tensorboard_dir = os.path.join(self.run_dir, self.config["paths"]["tensorboard_subdir"])
 
-        self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        #self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.accelerator = Accelerator(mixed_precision="fp16" if self.config["training"]["amp"] else "no")
+
+        self.device = self.accelerator.device
+
         print(f"Using device: {self.device}")
 
         for dir_path in [self.run_dir, self.model_save_dir, self.visualization_dir, self.logs_dir,
@@ -174,7 +178,10 @@ class SegmentationPipeline:
             Trained Mask2FormerModel instance
         """
         self.logger.info("Initializing and training model...")
-        segmenter = Mask2FormerModel(model_name=self.pretrained_weights, num_classes=self.num_classes)
+        segmenter = Mask2FormerModel(
+            model_name=self.pretrained_weights,
+            num_classes=self.num_classes,
+            accelerator = self.accelerator)
 
         trained_model = segmenter.train_model(
             train_loader=train_loader,
@@ -183,11 +190,10 @@ class SegmentationPipeline:
             lr=self.learning_rate,
             device=self.device,
             tensorboard_writer=self.writer,
-            use_amp=self.use_amp
         )
 
         model_path: str = os.path.join(self.model_save_dir, "trained_model.pth")
-        torch.save(trained_model.state_dict(), model_path)
+        torch.save(self.accelerator.unwrap_model(trained_model).state_dict(), model_path)
         self.logger.info(f"Model saved to {model_path}")
         return segmenter
 
@@ -200,7 +206,7 @@ class SegmentationPipeline:
             val_loader: Validation DataLoader
         """
         self.logger.info("Evaluating model...")
-        mean_iou, per_class_iou = segmenter.evaluate(val_loader, device=self.device)
+        mean_iou, per_class_iou = segmenter.evaluate(val_loader)
         self.logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
 
     def visualize(
