@@ -1,5 +1,5 @@
 from typing import Optional
-
+import os
 import torch
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
@@ -66,6 +66,11 @@ class Mask2FormerModel:
                     torch.cuda.empty_cache()
 
             self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer)
+
+            os.makedirs("codeBase/checkpoints", exist_ok=True)
+            checkpoint_path = os.path.join("codeBase/checkpoints", f"model_epoch_{epoch}.pth")
+            torch.save(self.accelerator.unwrap_model(self.model).state_dict(), checkpoint_path)
+            logger.info(f"Saved checkpoint: {checkpoint_path}")
 
         return self.model
 

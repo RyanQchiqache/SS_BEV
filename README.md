@@ -38,6 +38,8 @@ By leveraging the generalization power of Mask2Former and incorporating a tailor
 ```
 SS_BEV/
 ├── codeBase/ # Core source code
+│ ├── app
+│ │ ├── visualisation_App.py # Using streamlit to test the model on new images.
 │ ├── config/ # Logging setup and config loading
 │ │ ├── config.yaml # Central configuration file for model, training, data, and paths
 │ │ ├──  logging_setup.py # special logging file for user friendly logging
