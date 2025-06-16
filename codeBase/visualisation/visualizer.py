@@ -25,75 +25,44 @@ class Visualizer:
     }
 
     @staticmethod
+    def apply_colormap(mask: np.ndarray) -> np.ndarray:
+        color_mask = np.zeros((*mask.shape, 3), dtype=np.uint8)
+        for class_idx, color in Visualizer.CLASS_TO_COLOR.items():
+            color_mask[mask == class_idx] = color
+        return color_mask
+
+    @staticmethod
     def overlay_prediction(image, mask, alpha=0.6):
         """
         Overlay a segmentation mask on an image.
-        image: input image (NumPy array or PIL Image).
-        mask: 2D array of class indices.
-        alpha: transparency for the overlay (0=only image, 1=only mask).
-        Returns a PIL Image with overlay.
+
+        Args:
+            image: PIL.Image or np.ndarray of shape (H, W, 3)
+            mask: 2D np.ndarray of shape (H, W) with class indices
         """
-        # Ensure the image is in RGB format
+        # Convert PIL image to RGB NumPy array
         if isinstance(image, Image.Image):
             image = np.array(image.convert("RGB"))
         else:
             image = image.copy()
 
-        overlay = image.copy()
-        H, W = mask.shape
+        # Ensure uint8 type
+        image = image.astype(np.uint8)
 
-        # Apply the visualization colors to the overlay
-        for class_idx, color in Visualizer.CLASS_TO_COLOR.items():
-            overlay[mask == class_idx] = color
+        # Resize mask if needed
+        if mask.shape != image.shape[:2]:
+            mask = cv2.resize(mask, (image.shape[1], image.shape[0]), interpolation=cv2.INTER_NEAREST)
 
-        # Blend the original image and the colored overlay
-        blended = cv2.addWeighted(image, 1 - alpha, overlay, alpha, 0)
+        # Colorize mask
+        overlay_image = Visualizer.apply_colormap(mask)
+
+        # Assert shapes match
+        if image.shape != overlay_image.shape:
+            raise ValueError(f"Shape mismatch: image {image.shape}, overlay {overlay_image.shape}")
+
+        # Blend
+        blended = cv2.addWeighted(image, 1 - alpha, overlay_image, alpha, 0)
         return Image.fromarray(blended)
-
-    @staticmethod
-    def compare_masks(image, true_mask, pred_mask, alpha=0.5):
-        """
-        Create a side-by-side comparison of the ground truth mask and predicted mask over the image.
-        image: input image (NumPy array or PIL Image).
-        true_mask: ground truth mask (2D array of class indices).
-        pred_mask: predicted mask (2D array of class indices).
-        alpha: transparency for the overlay.
-        Returns a PIL image showing both overlays side by side.
-        """
-        # Generate overlay images for both ground truth and prediction
-        vis_true = Visualizer.overlay_prediction(image, true_mask, alpha=alpha)
-        vis_pred = Visualizer.overlay_prediction(image, pred_mask, alpha=alpha)
-
-        # Combine both images horizontally
-        combined_width = vis_true.width + vis_pred.width
-        combined_height = max(vis_true.height, vis_pred.height)
-        comparison = Image.new("RGB", (combined_width, combined_height))
-
-        # Paste both images side by side
-        comparison.paste(vis_true, (0, 0))
-        comparison.paste(vis_pred, (vis_true.width, 0))
-
-        return comparison
-
-    @staticmethod
-    def save_overlay(image, mask, filepath, alpha=0.6):
-        """
-        Save the overlay of an image and mask to a specified filepath.
-        """
-        overlay = Visualizer.overlay_prediction(image, mask, alpha=alpha)
-        overlay.save(filepath)
-        logger.info(f"Saved overlay to {filepath}")
-
-
-    @staticmethod
-    def save_comparison(image, true_mask, pred_mask, filepath, alpha=0.5):
-        """
-        Save a side-by-side comparison of ground truth and predicted masks.
-        """
-        comparison = Visualizer.compare_masks(image, true_mask, pred_mask, alpha=alpha)
-        comparison.save(filepath)
-        logger.info(f" Saved comparison to {filepath}")
-
     @staticmethod
     def save_full_comparison(image, gt_mask, pred_mask, save_path, alpha=0.6):
         """
@@ -143,4 +112,50 @@ class Visualizer:
 
         except Exception as e:
             logger.error(f"Failed to save full comparison to {save_path}: {e}")
+
+    @staticmethod
+    def compare_masks(image, true_mask, pred_mask, alpha=0.5):
+        """
+        Create a side-by-side comparison of the ground truth mask and predicted mask over the image.
+        image: input image (NumPy array or PIL Image).
+        true_mask: ground truth mask (2D array of class indices).
+        pred_mask: predicted mask (2D array of class indices).
+        alpha: transparency for the overlay.
+        Returns a PIL image showing both overlays side by side.
+        """
+        # Generate overlay images for both ground truth and prediction
+        vis_true = Visualizer.overlay_prediction(image, true_mask, alpha=alpha)
+        vis_pred = Visualizer.overlay_prediction(image, pred_mask, alpha=alpha)
+
+        # Combine both images horizontally
+        combined_width = vis_true.width + vis_pred.width
+        combined_height = max(vis_true.height, vis_pred.height)
+        comparison = Image.new("RGB", (combined_width, combined_height))
+
+        # Paste both images side by side
+        comparison.paste(vis_true, (0, 0))
+        comparison.paste(vis_pred, (vis_true.width, 0))
+
+        return comparison
+
+    @staticmethod
+    def save_overlay(image, mask, filepath, alpha=0.6):
+        """
+        Save the overlay of an image and mask to a specified filepath.
+        """
+        overlay = Visualizer.overlay_prediction(image, mask, alpha=alpha)
+        overlay.save(filepath)
+        logger.info(f"Saved overlay to {filepath}")
+
+
+    @staticmethod
+    def save_comparison(image, true_mask, pred_mask, filepath, alpha=0.5):
+        """
+        Save a side-by-side comparison of ground truth and predicted masks.
+        """
+        comparison = Visualizer.compare_masks(image, true_mask, pred_mask, alpha=alpha)
+        comparison.save(filepath)
+        logger.info(f" Saved comparison to {filepath}")
+
+
 

@@ -1,12 +1,12 @@
+from typing import Optional
+
 import torch
-from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
 from codeBase.config.logging_setup import setup_logger
-from torch.cuda.amp import autocast, GradScaler
 from tqdm import tqdm
-import time
+from accelerate import Accelerator
 
 logger = setup_logger(__name__)
 
@@ -16,7 +16,8 @@ class Mask2FormerModel:
     def __init__(self,
                  model_name: str = "facebook/mask2former-swin-small-ade-semantic",
                  num_classes: int = 6,
-                 class_names: list = None):
+                 class_names: list = None,
+                 accelerator: Optional[Accelerator] = None):
         logger.info("Loading image processor and model...")
         self.processor = Mask2FormerImageProcessor.from_pretrained(
             model_name,
@@ -37,14 +38,17 @@ class Mask2FormerModel:
             ignore_mismatched_sizes=True
         )
 
+
         self.backbone_frozen = False
+        self.accelerator = accelerator or Accelerator()
+        self.model.to(self.accelerator.device)
         logger.info("Model and processor initialized successfully.")
 
-    def train_model(self, train_loader, val_loader, epochs, lr, device=torch.device("cpu"), tensorboard_writer=None,
-                    use_amp=False):
-        self.model.to(device)
+    def train_model(self, train_loader, val_loader, epochs, lr, device=None, tensorboard_writer=None):
         optimizer = AdamW(self.model.parameters(), lr=lr)
-        scaler = GradScaler()
+        self.model, optimizer, train_loader, val_loader = self.accelerator.prepare(
+            self.model, optimizer, train_loader, val_loader
+        )
 
         for epoch in range(1, epochs + 1):
             self._set_model_mode(train=True)
@@ -54,7 +58,7 @@ class Mask2FormerModel:
 
             for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
                 try:
-                    loss = self._process_batch(batch, device, use_amp, optimizer, scaler)
+                    loss = self._process_batch(batch, device, optimizer)
                     total_loss += loss
                     logger.info(f"[Epoch {epoch}] Batch {batch_idx + 1}/{len(train_loader)} processed.")
                 except Exception as e:
@@ -70,7 +74,7 @@ class Mask2FormerModel:
         if train and self.backbone_frozen and hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
             self.model.model.backbone.eval()
 
-    def _process_batch(self, batch, device, use_amp, optimizer, scaler):
+    def _process_batch(self, batch, device, optimizer):
         images, masks = batch
         images_np = [img.permute(1, 2, 0).cpu().numpy() for img in images]
         masks_np = [msk.cpu().numpy() for msk in masks]
@@ -78,14 +82,12 @@ class Mask2FormerModel:
         batch_inputs = self.processor(images=images_np, segmentation_maps=masks_np, return_tensors="pt")
         batch_inputs = {k: (v.to(device) if isinstance(v, torch.Tensor) else [i.to(device) for i in v]) for k, v in batch_inputs.items()}
 
-        with autocast(enabled=use_amp):
-            outputs = self.model(**batch_inputs)
-            loss = outputs.loss
+        outputs = self.model(**batch_inputs)
+        loss = outputs.loss
 
         optimizer.zero_grad()
-        scaler.scale(loss).backward()
-        scaler.step(optimizer)
-        scaler.update()
+        self.accelerator.backward(loss)
+        optimizer.step()
 
         return loss.item()
 
@@ -103,9 +105,9 @@ class Mask2FormerModel:
                 writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
 
     @torch.no_grad()
-    def evaluate(self, data_loader, device=torch.device("cpu")):
+    def evaluate(self, data_loader):
         logger.info("Evaluating model...")
-        self.model.to(device)
+        device = self.accelerator.device
         self.model.eval()
         num_classes = self.model.config.num_labels if hasattr(self.model, "config") else 6
 
@@ -153,9 +155,9 @@ class Mask2FormerModel:
         return total_intersection, total_union
 
     @torch.no_grad()
-    def predict(self, image, device=torch.device("cpu")):
+    def predict(self, image, device=None):
         logger.info("Generating prediction...")
-        self.model.to(device)
+        device = self.accelerator.device
         self.model.eval()
 
         if isinstance(image, np.ndarray):
