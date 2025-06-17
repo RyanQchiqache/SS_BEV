@@ -49,6 +49,7 @@ class Mask2FormerModel:
         self.model, optimizer, train_loader, val_loader = self.accelerator.prepare(
             self.model, optimizer, train_loader, val_loader
         )
+        best_miou = 0
 
         for epoch in range(1, epochs + 1):
             self._set_model_mode(train=True)
@@ -65,13 +66,7 @@ class Mask2FormerModel:
                     logger.warning(f"Error processing batch: {e}")
                     torch.cuda.empty_cache()
 
-            self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer)
-
-            os.makedirs("codeBase/checkpoints", exist_ok=True)
-            checkpoint_path = os.path.join("codeBase/checkpoints", f"model_epoch_{epoch}.pth")
-            torch.save(self.accelerator.unwrap_model(self.model).state_dict(), checkpoint_path)
-            logger.info(f"Saved checkpoint: {checkpoint_path}")
-
+            best_miou = self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer, best_miou)
         return self.model
 
     def _set_model_mode(self, train=True):
@@ -96,7 +91,7 @@ class Mask2FormerModel:
 
         return loss.item()
 
-    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer):
+    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer, best_miou):
         avg_loss = total_loss / num_batches
         val_miou, per_class_iou = self.evaluate(val_loader)
 
@@ -108,6 +103,15 @@ class Mask2FormerModel:
             writer.add_scalar("IoU/val", val_miou, epoch)
             for idx, iou in enumerate(per_class_iou):
                 writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
+
+
+        if val_miou > best_miou:
+            best_miou = val_miou
+            best_path = os.path.join("codeBase/checkpoints", "best_model.pth")
+            torch.save(self.accelerator.unwrap_model(self.model).state_dict(), best_path)
+            logger.info(f"✅ Best model saved (epoch {epoch}) with mIoU {val_miou:.4f}")
+
+        return best_miou
 
     @torch.no_grad()
     def evaluate(self, data_loader):
