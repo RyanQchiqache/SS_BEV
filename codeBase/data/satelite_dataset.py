@@ -32,7 +32,6 @@ class SatelliteDataset(Dataset):
         else:
             mask = mask_rgb
 
-
         if self.transform:
             augmented = self.transform(image=image, mask=mask)
             image = augmented["image"]
@@ -84,7 +83,7 @@ class FlairDataset(SatelliteDataset):
         return class_map
 
     def __init__(self, image_dir: str, mask_dir: str, transform=None):
-        image_paths = sorted(glob.glob(os.path.join(image_dir, "*.jpg")))
+        image_paths = sorted(glob.glob(os.path.join(image_dir, "**", "*.jpg"), recursive=True))
         mask_paths = sorted(glob.glob(os.path.join(mask_dir, "*.png")))
         super().__init__(image_paths, mask_paths, transform, rgb_to_class=FlairDataset.rgb_to_class)
 

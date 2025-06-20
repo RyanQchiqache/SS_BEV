@@ -105,6 +105,9 @@ class SegmentationPipeline:
                     p=crop["p"]
                 )
             )
+        transforms_list.append(
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        )
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
 
@@ -164,7 +167,12 @@ class SegmentationPipeline:
                 augmented = train_transform(image=img, mask=mask)
                 augmented_imgs.append(augmented["image"])
                 augmented_masks.append(augmented["mask"])
+            self.logger.info(f"Augmented {len(train_imgs)} training images using Albumentations.")
             train_imgs, train_masks = augmented_imgs, augmented_masks
+
+        val_transform = A.Compose([
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ], additional_targets={"mask": "mask"})
 
         # Patchify both train and val sets
         def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[
@@ -181,8 +189,8 @@ class SegmentationPipeline:
         train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
-        train_dataset = self.DatasetClass(train_img_patches, train_mask_patches)
-        val_dataset = self.DatasetClass(val_img_patches, val_mask_patches)
+        train_dataset = self.DatasetClass(train_img_patches, train_mask_patches, transform=train_transform)
+        val_dataset = self.DatasetClass(val_img_patches, val_mask_patches, transform=val_transform)
 
         # Create DataLoaders with collate_fn
         train_loader = DataLoader(
@@ -311,13 +319,15 @@ class SegmentationPipeline:
         self.logger.info("Visualization process completed.")
 
     def run(self) -> None:
-        """Executes the full training and evaluation workflow."""
-        train_loader, val_loader, val_imgs, val_masks, preprocessor = self.prepare_data()
-        segmenter = self.train(train_loader, val_loader)
-        self.evaluate(segmenter, val_loader)
-        self.visualize(segmenter, val_imgs, val_masks, preprocessor, prefix="trained")
-        self.writer.close()
-        self.logger.info("Workflow completed.")
+        try:
+            train_loader, val_loader, val_imgs, val_masks, preprocessor = self.prepare_data()
+            segmenter = self.train(train_loader, val_loader)
+            self.evaluate(segmenter, val_loader)
+            self.visualize(segmenter, val_imgs, val_masks, preprocessor, prefix="trained")
+        finally:
+            self.writer.close()
+            self.logger.info("Workflow completed.")
+
 
 if __name__ == "__main__":
     pipeline = SegmentationPipeline()
