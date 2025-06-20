@@ -6,12 +6,18 @@ from typing import List, Tuple
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger, load_config
-from codeBase.data.DataPreprocessor import DataPreprocessor
+from codeBase.data.Preprocessing_Utild import PreprocessingUtils
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
-from codeBase.data.satelite_dataset import SatelliteDataset
+from codeBase.data.satelite_dataset import SatelliteDataset, FlairDataset, DLRDataset
 from datetime import datetime
 from accelerate import Accelerator
+
+DATASET_REGISTRY = {
+    "satellite": SatelliteDataset,
+    "flair": FlairDataset,
+    "dlr": DLRDataset
+}
 
 class SegmentationPipeline:
     """
@@ -24,6 +30,12 @@ class SegmentationPipeline:
 
         torch.manual_seed(42)
         np.random.seed(42)
+
+        dataset_name = self.config["data"]["dataset_name"]
+        label_type = self.config["data"].get("label_type", "dense")  # default to dense
+
+        self.class_names = self.config["model"]["classes_names"][dataset_name][label_type]
+        self.DatasetClass = DATASET_REGISTRY.get(self.dataset_name, SatelliteDataset)
 
         self.image_dir: str = self.config["data"]["images_dir"]
         self.mask_dir: str = self.config["data"]["masks_dir"]
@@ -90,7 +102,7 @@ class SegmentationPipeline:
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
 
-    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
+    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], PreprocessingUtils]:
         """
         Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
 
@@ -105,7 +117,7 @@ class SegmentationPipeline:
         self.logger.info("Preparing data...")
 
         # Initialize preprocessor
-        preprocessor = DataPreprocessor(
+        preprocessor = PreprocessingUtils(
             image_dir=self.image_dir,
             mask_dir=self.mask_dir,
             patch_size=self.patch_size,
@@ -114,12 +126,27 @@ class SegmentationPipeline:
 
         debug = self.config["data"].get("debug", False)
         debug_limit = self.config["data"].get("debug_limit", None) if debug else None
-        train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+        if self.dataset_name == "flair":
+            train_csv = self.config["data"]["train_csv"]
+            val_csv = self.config["data"]["val_csv"]
+            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data_from_csvs(
+                train_csv_path=train_csv,
+                val_csv_path=val_csv,
+                rgb_to_class=FlairDataset.rgb_to_class(),
+                debug_limit=debug_limit
+            )
+        else:
+            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+                rgb_to_class=FlairDataset.rgb_to_class(),
+                train_split=self.config["data"]["train_split"],
+                debug_limit=debug_limit
+            )
+
+        """train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
             train_split=self.config["data"]["train_split"],
             debug_limit=debug_limit
         )
-
-        # Apply augmentations to full images (optional, before patchifying)
+"""
         if self.config.get("augmentation"):
             train_transform = self.build_augmentation_pipeline()
             augmented_imgs, augmented_masks = [], []
@@ -144,26 +171,30 @@ class SegmentationPipeline:
         train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
-        # Wrap into PyTorch datasets
-        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches)
-        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches)
+        train_dataset = self.DatasetClass(train_img_patches, train_mask_patches)
+        val_dataset = self.DatasetClass(val_img_patches, val_mask_patches)
 
         # Create DataLoaders with collate_fn
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            collate_fn=SatelliteDataset.collate_fn
+            collate_fn=SatelliteDataset.collate_fn,
+            num_workers = 4,
+            pin_memory = True
         )
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            collate_fn=SatelliteDataset.collate_fn
+            collate_fn=SatelliteDataset.collate_fn,
+            num_workers = 4,
+            pin_memory = True
         )
 
         self.logger.info(f"Patchified into {len(train_dataset)} training and {len(val_dataset)} validation patches.")
         return train_loader, val_loader, val_imgs, val_masks, preprocessor
+
 
 
     def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
@@ -181,6 +212,7 @@ class SegmentationPipeline:
         segmenter = Mask2FormerModel(
             model_name=self.pretrained_weights,
             num_classes=self.num_classes,
+            class_names= self.class_names,
             accelerator = self.accelerator)
 
         trained_model = segmenter.train_model(
@@ -207,6 +239,8 @@ class SegmentationPipeline:
         """
         self.logger.info("Evaluating model...")
         mean_iou, per_class_iou = segmenter.evaluate(val_loader)
+        for idx, iou in enumerate(per_class_iou):
+            self.logger.info(f"Class {idx}: IoU = {iou:.4f}")
         self.logger.info(f"Evaluation completed. Mean IoU: {mean_iou:.4f}, Per-Class IoU: {per_class_iou}")
 
     def visualize(
@@ -214,7 +248,7 @@ class SegmentationPipeline:
             segmenter: Mask2FormerModel,
             val_imgs: List[np.ndarray],
             val_masks: List[np.ndarray],
-            preprocessor: DataPreprocessor,
+            preprocessor: PreprocessingUtils,
             prefix: str = "prediction"
     ) -> None:
         """

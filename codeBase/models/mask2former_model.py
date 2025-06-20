@@ -4,7 +4,7 @@ import torch
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
-from codeBase.config.logging_setup import setup_logger
+from codeBase.config.logging_setup import setup_logger, load_config
 from tqdm import tqdm
 from accelerate import Accelerator
 
@@ -24,9 +24,13 @@ class Mask2FormerModel:
             reduce_labels=False,
             do_rescale=False
         )
+        self.config = load_config()
+        model_cfg = self.config.get("model", {})
 
         if class_names is None:
-            class_names = ["Building", "Land", "Road", "Vegetation", "Water", "Unlabeled"]
+            class_names = model_cfg.get("class_names",["Building", "Land", "Road", "Vegetation", "Water", "Unlabeled"])
+        num_classes = num_classes or model_cfg.get("num_classes", len(class_names))
+
         self.id2label = {i: name for i, name in enumerate(class_names)}
         self.label2id = {name: i for i, name in self.id2label.items()}
 
@@ -49,7 +53,7 @@ class Mask2FormerModel:
         self.model, optimizer, train_loader, val_loader = self.accelerator.prepare(
             self.model, optimizer, train_loader, val_loader
         )
-        best_miou = 0
+        #best_miou = 0
 
         for epoch in range(1, epochs + 1):
             self._set_model_mode(train=True)
@@ -66,7 +70,7 @@ class Mask2FormerModel:
                     logger.warning(f"Error processing batch: {e}")
                     torch.cuda.empty_cache()
 
-            best_miou = self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer, best_miou)
+            self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer)
         return self.model
 
     def _set_model_mode(self, train=True):
@@ -91,7 +95,7 @@ class Mask2FormerModel:
 
         return loss.item()
 
-    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer, best_miou):
+    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer):
         avg_loss = total_loss / num_batches
         val_miou, per_class_iou = self.evaluate(val_loader)
 
@@ -105,13 +109,13 @@ class Mask2FormerModel:
                 writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
 
 
-        if val_miou > best_miou:
+        """if val_miou > best_miou:
             best_miou = val_miou
-            best_path = os.path.join("codeBase/checkpoints", "best_model.pth")
+            best_path = os.path.join("codeBase/outputs/20240604_mask2former_kaggle/checkpoints", "best_model.pth")
             torch.save(self.accelerator.unwrap_model(self.model).state_dict(), best_path)
             logger.info(f"✅ Best model saved (epoch {epoch}) with mIoU {val_miou:.4f}")
 
-        return best_miou
+        return best_miou"""
 
     @torch.no_grad()
     def evaluate(self, data_loader):
