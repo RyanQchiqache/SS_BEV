@@ -66,7 +66,7 @@ class PreprocessingUtils:
 
         return patches, coordinates, (H, W)
 
-    @staticmethod
+    @classmethod
     def reconstruct_from_patches(patches: List[np.ndarray], coordinates: List[Tuple[int, int]],
                                  full_shape: Tuple[int, int], patch_size) -> np.ndarray:
         H, W = full_shape
@@ -92,11 +92,22 @@ class PreprocessingUtils:
 
         return canvas.astype(patches[0].dtype)
 
+    def prepare_data(
+            self,
+            rgb_to_class,
+            train_split: float = 0.8,
+            debug_limit: int = None,
+            use_csv: bool = False,
+            train_csv_path: str = None,
+            val_csv_path: str = None,
+            base_dir: str = None
+    ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
 
-    def prepare_data(self, rgb_to_class ,train_split: float = 0.8, debug_limit: int = None, csv_path= None)->Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
-        if csv_path is None:
-            csv_path = self.prepare_data_from_csvs()
+        if use_csv:
+            assert train_csv_path and val_csv_path, "CSV paths must be provided when use_csv=True"
+            return self.prepare_data_from_csvs(train_csv_path, val_csv_path, rgb_to_class,base_dir, debug_limit)
 
+        # Default: load from folders
         def load_image_and_mask(image_name, mask_name):
             image_path = os.path.join(self.image_dir, image_name)
             mask_path = os.path.join(self.mask_dir, mask_name)
@@ -106,26 +117,22 @@ class PreprocessingUtils:
             mask = rgb_to_class(mask_rgb)
 
             return image, mask
+
         image_files = sorted([f for f in os.listdir(self.image_dir) if f.endswith(('.png', '.jpg', '.tif'))])
         mask_files = sorted([f for f in os.listdir(self.mask_dir) if f.endswith(('.png', '.jpg', '.tif'))])
 
-
         assert len(image_files) == len(mask_files), "Mismatch between images and masks"
-
         combined = list(zip(image_files, mask_files))
         np.random.shuffle(combined)
 
-        # split into training and validation sets
-        total = len(combined)
-        split_idx = int(train_split * total)
+        split_idx = int(train_split * len(combined))
         train_pairs = combined[:split_idx]
         val_pairs = combined[split_idx:]
 
-        # load image and mask data
         train_imgs, train_masks = zip(*[load_image_and_mask(img, mask) for img, mask in train_pairs])
         val_imgs, val_masks = zip(*[load_image_and_mask(img, mask) for img, mask in val_pairs])
 
-        print(f"[Preprocessing] Loaded {len(train_imgs)} training and {len(val_imgs)} validation samples.")
+        print(f"[Preprocessing] Loaded {len(train_imgs)} training and {len(val_imgs)} validation samples from folders.")
 
         if debug_limit is not None:
             train_imgs = train_imgs[:debug_limit]
@@ -140,6 +147,7 @@ class PreprocessingUtils:
             train_csv_path: str,
             val_csv_path: str,
             rgb_to_class,
+            base_dir = None,
             debug_limit: int = None
     ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
 
@@ -148,7 +156,12 @@ class PreprocessingUtils:
                 lines = [line.strip().split() for line in f.readlines()]
             return lines
 
-        def load_pair(image_path: str, mask_path: str):
+        def resolve_path(p):
+            return os.path.join(base_dir, p) if base_dir and not os.path.isabs(p) else p
+
+        def load_pair(image_path, mask_path):
+            image_path = resolve_path(image_path)
+            mask_path = resolve_path(mask_path)
             image = np.array(Image.open(image_path).convert("RGB"))
             mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
             mask = rgb_to_class(mask_rgb)

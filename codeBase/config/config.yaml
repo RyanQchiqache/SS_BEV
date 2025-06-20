@@ -3,17 +3,20 @@ project_name: Mask2Former Aerial Segmentation
 data:
   raw_dir: SS_data
   flair:
-    image_dir:
-    mask_dir:
+    base_dir: SS_data/FLAIR-HUB_TOY
+    train_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-train.csv
+    val_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-val.csv
   dlr:
-    image_dir:
-    mask_dir:
+    image_dir: ...
+    mask_dir: ...
   batch_size: 12
   num_classes: 6
   patch_size: 128
   train_split: 0.8
   debug : true
   debug_limit: 300
+
+
 
 model:
   name: "Mask2Former"
@@ -78,9 +81,10 @@ model:
         - Parking space
         - Other lane-markings
 
-
   learning_rate: 2e-4
   epochs: 25
+  num_workers: 4
+  pin_memory: True
   freeze_backbone: false
   save_best_only: true
   checkpoint_interval: 5

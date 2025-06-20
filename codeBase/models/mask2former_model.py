@@ -27,12 +27,30 @@ class Mask2FormerModel:
         self.config = load_config()
         model_cfg = self.config.get("model", {})
 
+        dataset_name = model_cfg.get("dataset_name", "flair")
+        label_type = model_cfg.get("label_type", None)
+
+        if label_type is None:
+            class_names = model_cfg["classes_names"].get(dataset_name)
+        else:
+            class_names = model_cfg["classes_names"].get(dataset_name, {}).get(label_type)
+
+        if dataset_name == "flair" and label_type is not None:
+            logger.warning("Label type was set for flair dataset, which may not use it.")
+
         if class_names is None:
-            class_names = model_cfg.get("class_names",["Building", "Land", "Road", "Vegetation", "Water", "Unlabeled"])
-        num_classes = num_classes or model_cfg.get("num_classes", len(class_names))
+            raise ValueError(f"Class names not found in config for dataset: {dataset_name}, label_type: {label_type}")
+
+
+        logger.info(f"Loaded class names for dataset: {dataset_name}, label_type: {label_type}")
+        logger.debug(f"Class names: {class_names}")
+
+        num_classes = model_cfg.get("num_classes", len(class_names))
 
         self.id2label = {i: name for i, name in enumerate(class_names)}
         self.label2id = {name: i for i, name in self.id2label.items()}
+
+        logger.debug(f"id2label mapping: {self.id2label}")
 
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
             model_name,

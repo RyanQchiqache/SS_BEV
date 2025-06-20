@@ -31,20 +31,27 @@ class SegmentationPipeline:
         torch.manual_seed(42)
         np.random.seed(42)
 
-        dataset_name = self.config["data"]["dataset_name"]
-        label_type = self.config["data"].get("label_type", "dense")  # default to dense
+        self.dataset_name = self.config["data"]["dataset_name"]
+        self.label_type = self.config["data"].get("label_type", "dense")
 
-        self.class_names = self.config["model"]["classes_names"][dataset_name][label_type]
+        self.class_names = self.config["model"]["classes_names"].get(self.dataset_name, {}).get(self.label_type)
+        if self.class_names is None:
+            raise ValueError(
+                f"Class names not found in config for dataset '{self.dataset_name}' with label type '{self.label_type}'")
+
         self.DatasetClass = DATASET_REGISTRY.get(self.dataset_name, SatelliteDataset)
 
         self.image_dir: str = self.config["data"]["images_dir"]
         self.mask_dir: str = self.config["data"]["masks_dir"]
         self.patch_size: int = int(self.config["data"]["patch_size"])
         self.batch_size: int = int(self.config["data"]["batch_size"])
-        self.num_classes: int = int(self.config["data"]["num_classes"])
+        self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.num_classes: int = int(self.config["model"]["num_classes"])
         self.epochs: int = int(self.config["model"]["epochs"])
         self.learning_rate: float = float(self.config["model"]["learning_rate"])
-        self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.num_workers: int = int(self.config["model"]["num_workers"])
+        self.pin_memory: bool = bool(self.config["model"]["pin_memory"])
+
 
         base_output_dir = self.config["paths"]["base_output_dir"]
         run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
@@ -57,16 +64,15 @@ class SegmentationPipeline:
 
         #self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.accelerator = Accelerator(mixed_precision="fp16" if self.config["training"]["amp"] else "no")
-
+        self.logger = setup_logger(__name__)
         self.device = self.accelerator.device
-
-        print(f"Using device: {self.device}")
+        self.logger.info(f"Using device: {self.device}")
 
         for dir_path in [self.run_dir, self.model_save_dir, self.visualization_dir, self.logs_dir,
                          self.tensorboard_dir]:
             os.makedirs(dir_path, exist_ok=True)
 
-        self.logger = setup_logger(__name__)
+
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
     def build_augmentation_pipeline(self) -> A.Compose:
         """
@@ -129,15 +135,19 @@ class SegmentationPipeline:
         if self.dataset_name == "flair":
             train_csv = self.config["data"]["train_csv"]
             val_csv = self.config["data"]["val_csv"]
-            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data_from_csvs(
+            base_dir = self.config["data"].get("base_dir", None)
+
+            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+                rgb_to_class=FlairDataset.rgb_to_class,
+                use_csv=True,
                 train_csv_path=train_csv,
                 val_csv_path=val_csv,
-                rgb_to_class=FlairDataset.rgb_to_class(),
-                debug_limit=debug_limit
+                base_dir=base_dir,
+                debug_limit=self.config["data"].get("debug_limit")
             )
         else:
             train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
-                rgb_to_class=FlairDataset.rgb_to_class(),
+                rgb_to_class=DLRDataset.rgb_to_class,
                 train_split=self.config["data"]["train_split"],
                 debug_limit=debug_limit
             )
@@ -180,16 +190,16 @@ class SegmentationPipeline:
             batch_size=self.batch_size,
             shuffle=True,
             collate_fn=SatelliteDataset.collate_fn,
-            num_workers = 4,
-            pin_memory = True
+            num_workers = self.num_workers,
+            pin_memory = self.pin_memory
         )
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
             collate_fn=SatelliteDataset.collate_fn,
-            num_workers = 4,
-            pin_memory = True
+            num_workers = self.num_workers,
+            pin_memory = self.pin_memory
         )
 
         self.logger.info(f"Patchified into {len(train_dataset)} training and {len(val_dataset)} validation patches.")
@@ -249,7 +259,8 @@ class SegmentationPipeline:
             val_imgs: List[np.ndarray],
             val_masks: List[np.ndarray],
             preprocessor: PreprocessingUtils,
-            prefix: str = "prediction"
+            prefix: str = "prediction",
+            max_samples: int = 3
     ) -> None:
         """
         Visualizes predictions by reconstructing full images from predicted patches.
@@ -263,7 +274,7 @@ class SegmentationPipeline:
         """
         self.logger.info(f"Generating visualizations with prefix '{prefix}'")
 
-        for i in range(min(3, len(val_imgs))):
+        for i in range(min(max_samples, len(val_imgs))):
             try:
                 img = val_imgs[i]
                 gt_mask = val_masks[i]
