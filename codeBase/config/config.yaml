@@ -2,8 +2,8 @@ project_name: Mask2Former Aerial Segmentation
 
 data:
   raw_dir: SS_data
-  images_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/images
-  masks_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/masks
+  images_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/images
+  masks_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/masks
   processed_dir: data/processed
   batch_size: 12
   num_classes: 6
@@ -45,7 +45,7 @@ training:
   early_stopping_patience: 5
 
 paths:
-  base_output_dir: outputs
+  base_output_dir: /media/ryqc/datasets/mask2former_outputs
   run_name: 20240604_mask2former_kaggle
   logs_subdir: logs
   tensorboard_subdir: tensorboard

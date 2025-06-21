@@ -1,7 +1,8 @@
 import os
 import numpy as np
 from PIL import Image
-from typing import Dict, Tuple, List, Any
+from typing import Dict, Tuple, List
+from collections import Counter
 
 
 class DataPreprocessor:
@@ -35,31 +36,6 @@ class DataPreprocessor:
             matches = np.all(mask_rgb == color, axis=-1)
             class_map[matches] = class_idx
         return class_map
-
-    def _patchify_image_old(self, image: np.ndarray, mask: np.ndarray) -> Tuple[List[Any], List[Any], List[Any]]:
-        H, W = mask.shape[:2]
-        new_H = (H // self.patch_size) * self.patch_size
-        new_W = (W // self.patch_size) * self.patch_size
-        image = image[:new_H, :new_W]
-        mask = mask[:new_H, :new_W]
-
-        h_patches = new_H // self.patch_size
-        w_patches = new_W // self.patch_size
-        img_patches = []
-        mask_patches = []
-        coords = []
-
-        for i in range(h_patches):
-            for j in range(w_patches):
-                y0 = i * self.patch_size
-                x0 = j * self.patch_size
-                img_patch = image[y0:y0 + self.patch_size, x0:x0 + self.patch_size]
-                mask_patch = mask[y0:y0 + self.patch_size, x0:x0 + self.patch_size]
-                img_patches.append(img_patch)
-                mask_patches.append(mask_patch)
-                coords.append((y0, x0))
-
-        return img_patches, mask_patches, coords
 
     def patchify_image(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int]]:
         ps = self.patch_size
@@ -147,6 +123,16 @@ class DataPreprocessor:
             train_masks = train_masks[:debug_limit]
             val_imgs = val_imgs[:debug_limit]
             val_masks = val_masks[:debug_limit]
+
+
+        """all_classes = np.unique(np.concatenate([np.unique(m) for m in train_masks]))
+        print(f"[CHECK] Unique class indices in training masks: {all_classes}")
+
+        pixel_counts = Counter()
+        for m in train_masks:
+            vals, counts = np.unique(m, return_counts=True)
+            pixel_counts.update(dict(zip(vals, counts)))
+        print("[CHECK] Pixel distribution:", pixel_counts)"""
 
         return list(train_imgs), list(train_masks), list(val_imgs), list(val_masks)
 

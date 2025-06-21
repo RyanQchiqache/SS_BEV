@@ -2,7 +2,7 @@ import os
 import torch
 import numpy as np
 import albumentations as A
-from typing import List, Tuple
+from typing import List, Tuple,Any
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger, load_config
@@ -87,10 +87,12 @@ class SegmentationPipeline:
                     p=crop["p"]
                 )
             )
+        transforms_list.append(A.Normalize(mean=[0.485, 0.456, 0.406],
+                                           std=[0.229, 0.224, 0.225]))
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
 
-    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
+    def prepare_data(self) -> Tuple[DataLoader[Any], DataLoader[Any], Any, Any, DataPreprocessor, Any]:
         """
         Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
 
@@ -128,6 +130,18 @@ class SegmentationPipeline:
                 augmented_imgs.append(augmented["image"])
                 augmented_masks.append(augmented["mask"])
             train_imgs, train_masks = augmented_imgs, augmented_masks
+        else:
+            train_transform = A.Compose([
+                A.Normalize(mean=[0.485, 0.456, 0.406],
+                            std=[0.229, 0.224, 0.225])
+            ], additional_targets={"mask": "mask"})
+
+        val_transform = A.Compose([
+            A.Normalize(mean=[0.485, 0.456, 0.406],
+                        std=[0.229, 0.224, 0.225])
+        ], additional_targets={"mask": "mask"})
+        self.logger.info(f"Train transform: {train_transform}")
+        self.logger.info(f"Validation transform: {val_transform}")
 
         # Patchify both train and val sets
         def patchify_batch(imgs: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[
@@ -145,8 +159,8 @@ class SegmentationPipeline:
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
         # Wrap into PyTorch datasets
-        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches)
-        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches)
+        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches,transform=train_transform)
+        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches, transform=val_transform)
 
         # Create DataLoaders with collate_fn
         train_loader = DataLoader(

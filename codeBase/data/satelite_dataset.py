@@ -2,6 +2,7 @@ import torch
 from torch.utils.data import Dataset
 from typing import Optional, Callable
 import numpy as np
+import matplotlib.pyplot as plt
 
 class SatelliteDataset(Dataset):
     def __init__(
@@ -26,7 +27,7 @@ class SatelliteDataset(Dataset):
             image = augmented["image"]
             mask = augmented["mask"]
 
-        image = torch.tensor(image, dtype=torch.float32).permute(2, 0, 1) / 255.0
+        image = torch.tensor(image, dtype=torch.float32).permute(2, 0, 1).contiguous()
         mask = torch.tensor(mask, dtype=torch.long)
         return image, mask
 

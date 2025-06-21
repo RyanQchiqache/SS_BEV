@@ -1,6 +1,8 @@
+from collections import Counter
 from typing import Optional
 import os
 import torch
+from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
@@ -37,8 +39,6 @@ class Mask2FormerModel:
             label2id=self.label2id,
             ignore_mismatched_sizes=True
         )
-
-
         self.backbone_frozen = False
         self.accelerator = accelerator or Accelerator()
         self.model.to(self.accelerator.device)
@@ -49,7 +49,6 @@ class Mask2FormerModel:
         self.model, optimizer, train_loader, val_loader = self.accelerator.prepare(
             self.model, optimizer, train_loader, val_loader
         )
-        best_miou = 0
 
         for epoch in range(1, epochs + 1):
             self._set_model_mode(train=True)
@@ -59,14 +58,15 @@ class Mask2FormerModel:
 
             for batch_idx, batch in tqdm(enumerate(train_loader), total=len(train_loader)):
                 try:
-                    loss = self._process_batch(batch, device, optimizer)
+                    loss = self._process_batch(batch, device, optimizer, batch_idx, epoch)
                     total_loss += loss
                     logger.info(f"[Epoch {epoch}] Batch {batch_idx + 1}/{len(train_loader)} processed.")
                 except Exception as e:
-                    logger.warning(f"Error processing batch: {e}")
+                    logger.warning(f"Error processing batch {batch_idx + 1}: {e}")
                     torch.cuda.empty_cache()
 
-            best_miou = self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer, best_miou)
+            self._log_epoch_results(epoch, total_loss, len(train_loader), val_loader, tensorboard_writer)
+
         return self.model
 
     def _set_model_mode(self, train=True):
@@ -74,10 +74,22 @@ class Mask2FormerModel:
         if train and self.backbone_frozen and hasattr(self.model, "model") and hasattr(self.model.model, "backbone"):
             self.model.model.backbone.eval()
 
-    def _process_batch(self, batch, device, optimizer):
+    def _process_batch(self, batch, device, optimizer, batch_idx, epoch):
         images, masks = batch
-        images_np = [img.permute(1, 2, 0).cpu().numpy() for img in images]
-        masks_np = [msk.cpu().numpy() for msk in masks]
+        #image_sample = images[0].cpu().numpy()
+        #logger.info(f"[Raw Tensor] shape: {image_sample.shape}, min/max: {image_sample.min()}/{image_sample.max()}")
+        images_np = [
+            Mask2FormerModel.unnormalize_img(img).permute(1, 2, 0).cpu().numpy().astype(np.float32)
+            for img in images
+        ]
+
+        # Convert mask to numpy int64
+        masks_np = [msk.cpu().numpy().astype(np.int64) for msk in masks]
+        """if epoch == 1 and batch_idx == 0:
+            img_sample = images_np[0]
+            mask_sample = masks_np[0]
+            logger.info(f"[Sanity Check] Image dtype: {img_sample.dtype}, shape: {img_sample.shape}, min/max: {img_sample.min()}/{img_sample.max()}")
+            logger.info(f"[Sanity Check] Mask dtype: {mask_sample.dtype}, shape: {mask_sample.shape}, unique values: {np.unique(mask_sample)}")"""
 
         batch_inputs = self.processor(images=images_np, segmentation_maps=masks_np, return_tensors="pt")
         batch_inputs = {k: (v.to(device) if isinstance(v, torch.Tensor) else [i.to(device) for i in v]) for k, v in batch_inputs.items()}
@@ -91,7 +103,7 @@ class Mask2FormerModel:
 
         return loss.item()
 
-    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer, best_miou):
+    def _log_epoch_results(self, epoch, total_loss, num_batches, val_loader, writer):
         avg_loss = total_loss / num_batches
         val_miou, per_class_iou = self.evaluate(val_loader)
 
@@ -102,16 +114,8 @@ class Mask2FormerModel:
             writer.add_scalar("Loss/Total", avg_loss, epoch)
             writer.add_scalar("IoU/val", val_miou, epoch)
             for idx, iou in enumerate(per_class_iou):
-                writer.add_scalar(f"IoU/Class_{idx}", iou, epoch)
-
-
-        if val_miou > best_miou:
-            best_miou = val_miou
-            best_path = os.path.join("codeBase/checkpoints", "best_model.pth")
-            torch.save(self.accelerator.unwrap_model(self.model).state_dict(), best_path)
-            logger.info(f"✅ Best model saved (epoch {epoch}) with mIoU {val_miou:.4f}")
-
-        return best_miou
+                class_name = self.id2label.get(idx, f"Class_{idx}")
+                writer.add_scalar(f"IoU/{class_name}", iou, epoch)
 
     @torch.no_grad()
     def evaluate(self, data_loader):
@@ -139,8 +143,13 @@ class Mask2FormerModel:
         return mean_iou, ious
 
     def _process_eval_batch(self, images, masks, num_classes, device):
-        images_np = [img.permute(1, 2, 0).contiguous().cpu().numpy() for img in images]
-        masks_np = [msk.cpu().numpy() for msk in masks]
+        images_np = [
+            Mask2FormerModel.unnormalize_img(img).permute(1, 2, 0).cpu().numpy().astype(np.float32)
+            for img in images
+        ]
+
+        # Convert mask to numpy int64
+        masks_np = [msk.cpu().numpy().astype(np.int64) for msk in masks]
 
         batch_inputs = self.processor(images=images_np, return_tensors="pt")
         batch_inputs = {k: v.to(device) for k, v in batch_inputs.items()}
@@ -153,9 +162,11 @@ class Mask2FormerModel:
         total_intersection = np.zeros(num_classes, dtype=np.int64)
         total_union = np.zeros(num_classes, dtype=np.int64)
 
-        for pred_mask, true_mask in zip(seg_maps, masks_np):
+        for i, (pred_mask, true_mask) in enumerate(zip(seg_maps, masks_np)):
             pred_arr = pred_mask.cpu().numpy().astype(np.uint8)
             true_arr = true_mask.astype(np.uint8)
+
+            #print(f"[CHECK] Predicted classes in sample {i}: {np.unique(pred_arr)}")
 
             intersection, union = Mask2FormerModel.compute_iou(pred_arr, true_arr, num_classes)
             total_intersection += intersection
@@ -204,3 +215,9 @@ class Mask2FormerModel:
             union[cls] = np.logical_or(pred_mask, true_mask).sum()
 
         return intersection, union
+    @staticmethod
+    def unnormalize_img(img: torch.Tensor) -> torch.Tensor:
+        mean = torch.tensor([0.485, 0.456, 0.406], device=img.device).view(3, 1, 1)
+        std = torch.tensor([0.229, 0.224, 0.225], device=img.device).view(3, 1, 1)
+        return (img * std + mean).clamp(0, 1)
+
