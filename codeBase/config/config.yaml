@@ -2,35 +2,50 @@ project_name: Mask2Former Aerial Segmentation
 
 data:
   raw_dir: SS_data
-  images_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/images
-  masks_dir: /home/ryqc/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/masks
+  images_dir: /home/ryqc/data/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/images
+  masks_dir: /home/ryqc/data/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/masks
   processed_dir: data/processed
   batch_size: 12
   num_classes: 6
-  patch_size: 256
+  patch_size: 512
   train_split: 0.8
   debug : true
   debug_limit: 100
 
 model:
-  name: "Mask2Former"
+  #name: "Mask2Former"
   pretrained_weights: "facebook/mask2former-swin-small-ade-semantic"
+  type: unet
+  name: "UNet-ResNet34"
+  encoder_name: "resnet34"
+  encoder_weights: "imagenet"
+  dataset_name: kaggle_ss_dataset
+  label_type: dense
   learning_rate: 1e-4
-  epochs: 20
+  epochs: 30
   freeze_backbone: false
   save_best_only: true
   checkpoint_interval: 5
+  classes_names:
+    kaggle_ss_dataset:
+      dense:
+        - Building
+        - Road
+        - Tree
+        - Vehicle
+        - Water
+        - Background
 
 augmentation:
-  horizontal_flip: 0.0
-  vertical_flip: 0.0
+  horizontal_flip: 0.5
+  vertical_flip: 0.5
   rotate_90: 0.5
   brightness_contrast: 0.0
   gaussian_blur: 0.0
   resized_crop:
-    enable: false
-    height: 128
-    width: 128
+    enable: true
+    height: 512
+    width: 512
     scale: [ 0.5, 0.8]
     p: 0.3
 
@@ -45,14 +60,23 @@ training:
   early_stopping_patience: 5
 
 paths:
-  base_output_dir: /media/ryqc/datasets/mask2former_outputs
-  run_name: 20240604_mask2former_kaggle
-  logs_subdir: logs
-  tensorboard_subdir: tensorboard
-  checkpoint_subdir: checkpoints
-  visualization_subdir: visualizations
-  test_results_subdir: test_results
+  mask2former:
+    base_output_dir: /home/ryqc/data/mask2former_outputs
+    run_name: mask2former_kaggle
+    logs_subdir: logs
+    tensorboard_subdir: tensorboard
+    checkpoint_subdir: checkpoints
+    visualization_subdir: visualizations
+    test_results_subdir: test_results
 
+  unet:
+    base_output_dir: /home/ryqc/data/unet_outputs
+    run_name: unet
+    logs_subdir: logs
+    tensorboard_subdir: tensorboard
+    checkpoint_subdir: checkpoints
+    visualization_subdir: visualizations
+    test_results_subdir: test_results
 
 visualization:
   show_masks: true

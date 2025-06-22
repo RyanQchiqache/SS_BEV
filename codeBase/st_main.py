@@ -7,6 +7,7 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger, load_config
 from codeBase.data.DataPreprocessor import DataPreprocessor
+from codeBase.models.UNetResNet34Model import UNetResNet34Model
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
 from codeBase.data.satelite_dataset import SatelliteDataset
@@ -25,6 +26,14 @@ class SegmentationPipeline:
         torch.manual_seed(42)
         np.random.seed(42)
 
+        self.model_type = self.config["model"].get("type", "mask2former").lower()
+        self.model_paths = self.config["paths"].get(self.model_type, {})
+        if not self.model_paths:
+            raise ValueError(f"No paths defined for model type: {self.model_type}")
+
+        base_output_dir = self.model_paths.get("base_output_dir")
+        run_name = self.model_paths.get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S")
+
         self.image_dir: str = self.config["data"]["images_dir"]
         self.mask_dir: str = self.config["data"]["masks_dir"]
         self.patch_size: int = int(self.config["data"]["patch_size"])
@@ -34,14 +43,11 @@ class SegmentationPipeline:
         self.learning_rate: float = float(self.config["model"]["learning_rate"])
         self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
 
-        base_output_dir = self.config["paths"]["base_output_dir"]
-        run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.run_dir = os.path.join(base_output_dir, run_name)
-
-        self.model_save_dir = os.path.join(self.run_dir, self.config["paths"]["checkpoint_subdir"])
-        self.visualization_dir = os.path.join(self.run_dir, self.config["paths"]["visualization_subdir"])
-        self.logs_dir = os.path.join(self.run_dir, self.config["paths"]["logs_subdir"])
-        self.tensorboard_dir = os.path.join(self.run_dir, self.config["paths"]["tensorboard_subdir"])
+        self.model_save_dir = os.path.join(self.run_dir, self.model_paths["checkpoint_subdir"])
+        self.visualization_dir = os.path.join(self.run_dir, self.model_paths["visualization_subdir"])
+        self.logs_dir = os.path.join(self.run_dir, self.model_paths["logs_subdir"])
+        self.tensorboard_dir = os.path.join(self.run_dir, self.model_paths["tensorboard_subdir"])
 
         #self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.accelerator = Accelerator(mixed_precision="fp16" if self.config["training"]["amp"] else "no")
@@ -56,6 +62,8 @@ class SegmentationPipeline:
 
         self.logger = setup_logger(__name__)
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
+        self.logger.info(f"Initialized pipeline for model: {self.model_type.upper()}")
+        self.logger.info(f"Output path: {self.run_dir}")
     def build_augmentation_pipeline(self) -> A.Compose:
         """
         Builds the Albumentations data augmentation pipeline based on configuration.
@@ -180,7 +188,7 @@ class SegmentationPipeline:
         return train_loader, val_loader, val_imgs, val_masks, preprocessor
 
 
-    def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
+    def train(self, train_loader: DataLoader, val_loader: DataLoader):
         """
         Initializes and trains the segmentation model.
 
@@ -191,27 +199,39 @@ class SegmentationPipeline:
         Returns:
             Trained Mask2FormerModel instance
         """
+        model_type = self.config["model"].get("type", "mask2former").lower()
+        self.logger.info(f"Training with model type: {model_type}")
         self.logger.info("Initializing and training model...")
-        segmenter = Mask2FormerModel(
-            model_name=self.pretrained_weights,
-            num_classes=self.num_classes,
-            accelerator = self.accelerator)
+        if model_type == "mask2former":
+            segmenter = Mask2FormerModel(
+                model_name=self.pretrained_weights,
+                num_classes=self.num_classes,
+                accelerator=self.accelerator
+            )
+        elif model_type == "unet":
+            segmenter = UNetResNet34Model(
+                num_classes=self.num_classes,
+                accelerator=self.accelerator
+            )
+        else:
+            raise ValueError(f"Unsupported model type: {model_type}")
 
         trained_model = segmenter.train_model(
             train_loader=train_loader,
             val_loader=val_loader,
             epochs=self.epochs,
             lr=self.learning_rate,
-            device=self.device,
+            #device=self.device,
             tensorboard_writer=self.writer,
         )
 
         model_path: str = os.path.join(self.model_save_dir, "trained_model.pth")
         torch.save(self.accelerator.unwrap_model(trained_model).state_dict(), model_path)
         self.logger.info(f"Model saved to {model_path}")
+
         return segmenter
 
-    def evaluate(self, segmenter: Mask2FormerModel, val_loader: DataLoader) -> None:
+    def evaluate(self, segmenter, val_loader: DataLoader) -> None:
         """
         Evaluates the model on validation set using standard metrics.
 
@@ -260,7 +280,10 @@ class SegmentationPipeline:
                     continue
 
                 # Predict and reconstruct
-                pred_patches = [segmenter.predict(patch, device=self.device) for patch in img_patches]
+                if self.model_type == "mask2former":
+                    pred_patches = [segmenter.predict(patch, device=self.device) for patch in img_patches]
+                else:
+                    pred_patches = [segmenter.predict(patch) for patch in img_patches]
                 pred_mask = preprocessor.reconstruct_from_patches(pred_patches, coords, full_shape_img)
                 gt_mask_padded = preprocessor.reconstruct_from_patches(mask_patches, coords, full_shape_img)
 
@@ -273,6 +296,8 @@ class SegmentationPipeline:
                 save_path = os.path.join(self.visualization_dir, f"{prefix}_comparison_{i}.png")
                 Visualizer.save_full_comparison(img, gt_mask_padded, pred_mask, save_path)
                 self.logger.info(f"[Visualization {i}] Saved visualization: {save_path}")
+                self.logger.info(f"Saving outputs to: {self.run_dir}")
+
 
             except Exception as e:
                 self.logger.warning(f"[Visualization {i}] Skipping due to error: {e}")
