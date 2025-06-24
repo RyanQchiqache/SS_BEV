@@ -4,6 +4,7 @@ import streamlit as st
 from PIL import Image
 import numpy as np
 import torch
+from codeBase.data.satelite_dataset import FlairDataset
 
 sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
 
@@ -11,10 +12,11 @@ from codeBase.visualisation.visualizer import Visualizer
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.data.DataPreprocessor import DataPreprocessor
 
+
 # ⚙️ Config
 st.set_page_config(page_title="🛰️ BEV AI: Semantic Segmentation", layout="wide")
 from codeBase.config.logging_setup import load_config
-
+label_dict = FlairDataset.COLOR_MAP
 cfg = load_config()
 PATCH_SIZE = cfg["data"]["patch_size"]
 OVERLAP = 32
@@ -24,14 +26,14 @@ OVERLAP = 32
 def load_model():
     with st.spinner("Loading Mask2Former model..."):
         model = Mask2FormerModel()
-        checkpoint_path = "codeBase/outputs/20240604_mask2former_kaggle/checkpoints/trained_model.pth"
-        print("✅ Loaded weights from:", checkpoint_path)
-        model.model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+        #checkpoint_path = "codeBase/outputs/20240604_mask2former_kaggle/checkpoints/trained_model.pth"
+        #print("✅ Loaded weights from:", checkpoint_path)
+        #model.model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
         model.model.eval()
     return model
 
 model = load_model()
-preprocessor = DataPreprocessor(image_dir="", mask_dir="", patch_size=PATCH_SIZE, overlap=OVERLAP)
+preprocessor = DataPreprocessor(image_dir="", mask_dir="", patch_size=PATCH_SIZE, overlap=OVERLAP, label_dict=label_dict)
 
 st.sidebar.title("BEV Segmentation AI")
 st.sidebar.markdown("Upload urban or satellite imagery to get real-time segmentation using **Mask2Former**. Detect roads, buildings, vegetation, and more.")

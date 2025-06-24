@@ -9,10 +9,12 @@ import streamlit as st
 from PIL import Image
 from sklearn.metrics import accuracy_score, jaccard_score
 
-sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+from codeBase.data.satelite_dataset import FlairDataset
 
-from SS_BeV.codeBase.visualisation.visualizer import Visualizer
-from SS_BeV.codeBase.models.mask2former_model import Mask2FormerModel
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../")))
+label_dict = FlairDataset.COLOR_MAP
+from codeBase.visualisation.visualizer import Visualizer
+from codeBase.models.mask2former_model import Mask2FormerModel
 
 st.set_page_config(page_title="🛰️ BEV AI: Segmentation App", layout="wide")
 
@@ -23,9 +25,9 @@ st.sidebar.markdown("Upload urban or satellite imagery or video for segmentation
 def load_model():
     with st.spinner("Loading Mask2Former model..."):
         model = Mask2FormerModel()
-        checkpoint_path = "codeBase/outputs/20240604_mask2former_kaggle/checkpoints/trained_model.pth"
+        #checkpoint_path = "codeBase/outputs/20240604_mask2former_kaggle/checkpoints"
         #checkpoint_path = "codeBase/temp_codeBase/old_outputs/models/trained_model.pth"
-        model.model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
+        #model.model.load_state_dict(torch.load(checkpoint_path, map_location="cpu"))
         model.model.eval()
     return model
 

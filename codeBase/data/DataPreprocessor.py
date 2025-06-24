@@ -3,6 +3,7 @@ import numpy as np
 from PIL import Image
 from typing import Dict, Tuple, List, Any
 import cv2
+import csv
 
 
 class DataPreprocessor:
@@ -15,7 +16,7 @@ class DataPreprocessor:
     - Reconstruct full images from patches
     """
 
-    def __init__(self, image_dir: str, mask_dir: str, patch_size: int, overlap: int = 0):
+    def __init__(self, image_dir: str, mask_dir: str, patch_size: int, overlap: int = 0, label_dict=None):
         self.image_dir = image_dir
         self.mask_dir = mask_dir
         self.patch_size = patch_size
@@ -28,22 +29,6 @@ class DataPreprocessor:
             class_map[np.all(rgb_mask == color, axis=-1)] = class_idx
         return class_map
 
-    def create_color_to_class(self, label_dict: dict) -> Dict[Tuple[int, int, int], int]:
-        """
-        Convert a dictionary with class indices and hex colors to a COLOR_TO_CLASS mapping.
-        """
-
-        def hex_to_rgb(hex_color: str) -> Tuple[int, ...]:
-            hex_color = hex_color.lstrip("#")
-            return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
-
-        color_to_class = {}
-        for class_index, (_, hex_color) in label_dict.items():
-            rgb = hex_to_rgb(hex_color)
-            color_to_class[rgb] = class_index
-
-        return color_to_class
-
 
     def patchify_image(self, image: np.ndarray) -> Tuple[List[np.ndarray], List[Tuple[int, int]], Tuple[int, int]]:
         patch_size = self.patch_size
@@ -54,12 +39,7 @@ class DataPreprocessor:
         pad_right = (patch_size - W % patch_size) % patch_size
 
         if pad_bottom or pad_right:
-            image = np.pad(
-                image,
-                ((0, pad_bottom), (0, pad_right), (0, 0)) if image.ndim == 3 else ((0, pad_bottom), (0, pad_right)),
-                mode='constant',
-                constant_values=0
-            )
+            image = np.pad( image, ((0, pad_bottom), (0, pad_right), (0, 0)) if image.ndim == 3 else ((0, pad_bottom), (0, pad_right)), mode='constant', constant_values=0)
             H, W = image.shape[:2]
 
         patches = []
@@ -72,6 +52,17 @@ class DataPreprocessor:
                 coordinates.append((top, left))
 
         return patches, coordinates, (H, W)
+
+    def patchify_dataset(self, images: List[np.ndarray], masks: List[np.ndarray]) -> Tuple[
+        List[np.ndarray], List[np.ndarray]]:
+        img_patches: List[np.ndarray] = []
+        mask_patches: List[np.ndarray] = []
+        for img, mask in zip(images, masks):
+            img_p, _, _ = self.patchify_image(img)
+            mask_p, _, _ = self.patchify_image(mask)
+            img_patches.extend(img_p)
+            mask_patches.extend(mask_p)
+        return img_patches, mask_patches
 
     @classmethod
     def reconstruct_from_patches(patches: List[np.ndarray], coordinates: List[Tuple[int, int]],
@@ -121,7 +112,7 @@ class DataPreprocessor:
 
             image = np.array(Image.open(image_path).convert("RGB"))
             mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
-            mask = rgb_to_class(mask_rgb)
+            mask = self.rgb_to_class(mask_rgb)
 
             return image, mask
 
@@ -155,13 +146,14 @@ class DataPreprocessor:
             train_csv_path: str,
             val_csv_path: str,
             rgb_to_class,
-            base_dir = None,
+            base_dir=None,
             debug_limit: int = None
     ) -> Tuple[List[np.ndarray], List[np.ndarray], List[np.ndarray], List[np.ndarray]]:
 
         def load_csv(csv_path: str):
-            with open(csv_path, 'r') as f:
-                lines = [line.strip().split() for line in f.readlines()]
+            with open(csv_path, newline='') as f:
+                reader = csv.reader(f, delimiter=',')  # ✅ Fixed: use comma-separated parsing
+                lines = [row for row in reader if len(row) == 2]
             return lines
 
         def resolve_path(p):
@@ -172,7 +164,7 @@ class DataPreprocessor:
             mask_path = resolve_path(mask_path)
             image = np.array(Image.open(image_path).convert("RGB"))
             mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
-            mask = rgb_to_class(mask_rgb)
+            mask = self.rgb_to_class(mask_rgb)
             return image, mask
 
         train_lines = load_csv(train_csv_path)
@@ -190,17 +182,27 @@ class DataPreprocessor:
             val_imgs = val_imgs[:debug_limit]
             val_masks = val_masks[:debug_limit]
 
-
-        """all_classes = np.unique(np.concatenate([np.unique(m) for m in train_masks]))
-        print(f"[CHECK] Unique class indices in training masks: {all_classes}")
-
-        pixel_counts = Counter()
-        for m in train_masks:
-            vals, counts = np.unique(m, return_counts=True)
-            pixel_counts.update(dict(zip(vals, counts)))
-        print("[CHECK] Pixel distribution:", pixel_counts)"""
         print(f"[Preprocessing] Loaded {len(train_imgs)} training and {len(val_imgs)} validation samples from CSVs.")
         return list(train_imgs), list(train_masks), list(val_imgs), list(val_masks)
+
+    @staticmethod
+    def create_color_to_class(label_dict: dict) -> Dict[Tuple[int, int, int], int]:
+        """
+        Convert a dictionary with class indices and hex colors to a COLOR_TO_CLASS mapping.
+        """
+        if label_dict is None:
+            raise ValueError("label_dict must be provided to create_color_to_class")
+
+        def hex_to_rgb(hex_color: str) -> Tuple[int, ...]:
+            hex_color = hex_color.lstrip("#")
+            return tuple(int(hex_color[i:i + 2], 16) for i in (0, 2, 4))
+
+        color_to_class = {}
+        for class_index, (_, hex_color) in label_dict.items():
+            rgb = hex_to_rgb(hex_color)
+            color_to_class[rgb] = class_index
+
+        return color_to_class
 
 
 
