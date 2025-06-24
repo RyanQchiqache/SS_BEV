@@ -6,7 +6,7 @@ from typing import List, Tuple
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger, load_config
-from codeBase.data.Preprocessing_Utild import PreprocessingUtils
+from codeBase.data.DataPreprocessor import DataPreprocessor
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
 from codeBase.data.satelite_dataset import SatelliteDataset, FlairDataset, DLRDataset
@@ -111,7 +111,7 @@ class SegmentationPipeline:
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
 
-    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], PreprocessingUtils]:
+    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
         """
         Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
 
@@ -126,7 +126,7 @@ class SegmentationPipeline:
         self.logger.info("Preparing data...")
 
         # Initialize preprocessor
-        preprocessor = PreprocessingUtils(
+        preprocessor = DataPreprocessor(
             image_dir=self.image_dir,
             mask_dir=self.mask_dir,
             patch_size=self.patch_size,
@@ -266,7 +266,7 @@ class SegmentationPipeline:
             segmenter: Mask2FormerModel,
             val_imgs: List[np.ndarray],
             val_masks: List[np.ndarray],
-            preprocessor: PreprocessingUtils,
+            preprocessor: DataPreprocessor,
             prefix: str = "prediction",
             max_samples: int = 3
     ) -> None:

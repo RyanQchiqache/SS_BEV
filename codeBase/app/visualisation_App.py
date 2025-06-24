@@ -9,7 +9,7 @@ sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), "../../"
 
 from codeBase.visualisation.visualizer import Visualizer
 from codeBase.models.mask2former_model import Mask2FormerModel
-from codeBase.data.Preprocessing_Utild import PreprocessingUtils
+from codeBase.data.DataPreprocessor import DataPreprocessor
 
 # ⚙️ Config
 st.set_page_config(page_title="🛰️ BEV AI: Semantic Segmentation", layout="wide")
@@ -31,7 +31,7 @@ def load_model():
     return model
 
 model = load_model()
-preprocessor = PreprocessingUtils(image_dir="", mask_dir="", patch_size=PATCH_SIZE, overlap=OVERLAP)
+preprocessor = DataPreprocessor(image_dir="", mask_dir="", patch_size=PATCH_SIZE, overlap=OVERLAP)
 
 st.sidebar.title("BEV Segmentation AI")
 st.sidebar.markdown("Upload urban or satellite imagery to get real-time segmentation using **Mask2Former**. Detect roads, buildings, vegetation, and more.")

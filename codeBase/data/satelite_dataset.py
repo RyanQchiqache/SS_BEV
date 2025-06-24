@@ -4,7 +4,7 @@ import torch
 from torch.utils.data import Dataset
 from typing import Optional, Callable, Dict, Tuple
 import numpy as np
-from codeBase.data.Preprocessing_Utild import PreprocessingUtils
+from codeBase.data.DataPreprocessor import DataPreprocessor
 import PIL.Image as I
 class SatelliteDataset(Dataset):
     def __init__(
@@ -71,7 +71,7 @@ class FlairDataset(SatelliteDataset):
         19: ['other', '#000000'],
     }
 
-    COLOR_TO_CLASS = PreprocessingUtils.create_color_to_class(COLOR_MAP)
+    COLOR_TO_CLASS = DataPreprocessor.create_color_to_class(COLOR_MAP)
 
     @staticmethod
     def rgb_to_class(mask_rgb: np.ndarray) -> np.ndarray:
@@ -126,8 +126,8 @@ class DLRDataset(SatelliteDataset):
         11: ['Parking space', '#c8c800'],
         12: ['Other lane-markings', '#6400c8'],
     }
-    COLOR_TO_CLASS_dense = PreprocessingUtils.create_color_to_class(COLOR_MAP_dense)
-    COLOR_TO_CLASS_multi_lane = PreprocessingUtils.create_color_to_class(COLOR_MAP_multi_lane)
+    COLOR_TO_CLASS_dense = DataPreprocessor.create_color_to_class(COLOR_MAP_dense)
+    COLOR_TO_CLASS_multi_lane = DataPreprocessor.create_color_to_class(COLOR_MAP_multi_lane)
 
     @staticmethod
     def convert_rgb_to_class(mask_rgb: np.ndarray, color_to_class: Dict[Tuple[int, int, int], int]) -> np.ndarray:

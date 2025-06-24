@@ -3,7 +3,7 @@ import pytest
 import numpy as np
 from PIL import Image
 import matplotlib.pyplot as plt
-from codeBase.data.Preprocessing_Utild import DataPreprocessor
+from codeBase.data.DataPreprocessor import DataPreprocessor
 
 VISUALIZE = bool(int(os.environ.get("VISUALIZE", 0)))  # set to 1 to enable
 
