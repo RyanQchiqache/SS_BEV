@@ -157,16 +157,17 @@ class DataPreprocessor:
             return lines
 
         def resolve_path(p):
-            return os.path.join(base_dir, p) if base_dir and not os.path.isabs(p) else p
+            return os.path.normpath(os.path.join(base_dir, p)) if base_dir and not os.path.isabs(p) else p
 
         def load_pair(image_path, mask_path):
-            image_path = resolve_path(image_path)
-            mask_path = resolve_path(mask_path)
+            image_path = os.path.normpath(resolve_path(image_path))
+            mask_path = os.path.normpath(resolve_path(mask_path))
+            print(f"Image path: {image_path}")
+            print(f"Mask path: {mask_path}")
             image = np.array(Image.open(image_path).convert("RGB"))
             mask_rgb = np.array(Image.open(mask_path).convert("RGB"))
             mask = self.rgb_to_class(mask_rgb)
             return image, mask
-
         train_lines = load_csv(train_csv_path)
         val_lines = load_csv(val_csv_path)
 

@@ -4,9 +4,9 @@ data:
   raw_dir: SS_data
   dataset_name: flair
   flair:
-    base_dir: SS_data/FLAIR-HUB_TOY
-    train_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-train.csv
-    val_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-val.csv
+    base_dir: /home/ryqc/data/Bachelor_project/FLAIR-HUB_TOY
+    train_csv: /home/ryqc/data/Bachelor_project/flair_dataset/flair-1-paths-toy-train.csv
+    val_csv: /home/ryqc/data/Bachelor_project/flair_dataset/flair-1-paths-toy-val.csv
   batch_size: 12
   num_classes: 19
   patch_size: 128
