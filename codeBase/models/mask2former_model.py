@@ -1,4 +1,3 @@
-from collections import Counter
 from typing import Optional
 import os
 import torch
@@ -6,7 +5,7 @@ from torch import nn
 from transformers import Mask2FormerForUniversalSegmentation, Mask2FormerImageProcessor
 import numpy as np
 from torch.optim import AdamW
-from codeBase.config.logging_setup import setup_logger
+from codeBase.config.logging_setup import setup_logger, load_config
 from tqdm import tqdm
 from accelerate import Accelerator
 
@@ -26,11 +25,33 @@ class Mask2FormerModel:
             reduce_labels=False,
             do_rescale=False
         )
+        self.config = load_config()
+        model_cfg = self.config.get("model", {})
+
+        dataset_name = model_cfg.get("dataset_name", "flair")
+        label_type = model_cfg.get("label_type", None)
+
+        if label_type is None:
+            class_names = model_cfg["classes_names"].get(dataset_name)
+        else:
+            class_names = model_cfg["classes_names"].get(dataset_name, {}).get(label_type)
+
+        if dataset_name == "flair" and label_type is not None:
+            logger.warning("Label type was set for flair dataset, which may not use it.")
 
         if class_names is None:
-            class_names = ["Building", "Land", "Road", "Vegetation", "Water", "Unlabeled"]
+            raise ValueError(f"Class names not found in config for dataset: {dataset_name}, label_type: {label_type}")
+
+
+        logger.info(f"Loaded class names for dataset: {dataset_name}, label_type: {label_type}")
+        logger.debug(f"Class names: {class_names}")
+
+        num_classes = model_cfg.get("num_classes", len(class_names))
+
         self.id2label = {i: name for i, name in enumerate(class_names)}
         self.label2id = {name: i for i, name in self.id2label.items()}
+
+        logger.debug(f"id2label mapping: {self.id2label}")
 
         self.model = Mask2FormerForUniversalSegmentation.from_pretrained(
             model_name,
@@ -39,6 +60,8 @@ class Mask2FormerModel:
             label2id=self.label2id,
             ignore_mismatched_sizes=True
         )
+
+
         self.backbone_frozen = False
         self.accelerator = accelerator or Accelerator()
         self.model.to(self.accelerator.device)
@@ -49,6 +72,7 @@ class Mask2FormerModel:
         self.model, optimizer, train_loader, val_loader = self.accelerator.prepare(
             self.model, optimizer, train_loader, val_loader
         )
+        #best_miou = 0
 
         for epoch in range(1, epochs + 1):
             self._set_model_mode(train=True)

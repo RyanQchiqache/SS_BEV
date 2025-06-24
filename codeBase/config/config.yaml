@@ -2,50 +2,107 @@ project_name: Mask2Former Aerial Segmentation
 
 data:
   raw_dir: SS_data
-  images_dir: /home/ryqc/data/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/images
-  masks_dir: /home/ryqc/data/PycharmProjects/SS_BEV/SS_data/kaggle_ss_dataset/masks
-  processed_dir: data/processed
+  flair:
+    base_dir: SS_data/FLAIR-HUB_TOY
+    train_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-train.csv
+    val_csv: SS_data/flair_toy_dataset/flair-1-paths-toy-val.csv
+  dlr:
+    image_dir: ...
+    mask_dir: ...
   batch_size: 12
   num_classes: 6
-  patch_size: 512
+  patch_size: 128
   train_split: 0.8
   debug : true
-  debug_limit: 100
+  debug_limit: 300
+
+
 
 model:
-  #name: "Mask2Former"
-  pretrained_weights: "facebook/mask2former-swin-small-ade-semantic"
-  type: unet
-  name: "UNet-ResNet34"
+  name: "Mask2Former"
+  #name: "UNet-ResNet34"
   encoder_name: "resnet34"
   encoder_weights: "imagenet"
-  dataset_name: kaggle_ss_dataset
-  label_type: dense
-  learning_rate: 1e-4
-  epochs: 30
+  pretrained_weights: "facebook/mask2former-swin-small-ade-semantic"
+  num_classes: 19
+  normalize: true
+  mean: [ 0.485, 0.456, 0.406 ]
+  std: [ 0.229, 0.224, 0.225 ]
+  dataset_name: flair
+  label_type: null
+  classes_names:
+    flair :
+      - building
+      - pervious surface
+      - impervious surface
+      - bare soil
+      - water
+      - coniferous
+      - deciduous
+      - brushwood
+      - vineyard
+      - herbaceous vegetation
+      - agricultural land
+      - plowed land
+      - swimming_pool
+      - snow
+      - clear cut
+      - mixed
+      - ligneous
+      - greenhouse
+      - other
+    dlr :
+      dense :
+        - Low vegetation
+        - Paved road
+        - Non paved road
+        - Paved parking place
+        - Bikeways
+        - Sidewalks
+        - Entrance exit
+        - Danger area
+        - Lane-markings
+        - Buildings
+        - Car
+        - Truck
+        - Long Truck
+        - Bus
+        - Clutter
+        - Impervious surface
+        - Tree
+      multi_lane:
+        - Background
+        - Dash Line
+        - Long Line
+        - Small dash line
+        - Turn signs
+        - Plus sign on crossroads
+        - Crosswalk
+        - Stop Line
+        - Zebra zone
+        - No parking zone
+        - Parking space
+        - Other lane-markings
+
+  learning_rate: 2e-4
+  epochs: 25
+  num_workers: 4
+  pin_memory: True
+  type: unet
   freeze_backbone: false
   save_best_only: true
   checkpoint_interval: 5
-  classes_names:
-    kaggle_ss_dataset:
-      dense:
-        - Building
-        - Road
-        - Tree
-        - Vehicle
-        - Water
-        - Background
 
 augmentation:
-  horizontal_flip: 0.5
-  vertical_flip: 0.5
+  horizontal_flip: 0.0
+  vertical_flip: 0.0
   rotate_90: 0.5
   brightness_contrast: 0.0
   gaussian_blur: 0.0
   resized_crop:
-    enable: true
-    height: 512
-    width: 512
+    enable: false
+    height: 128
+    width: 128
     scale: [ 0.5, 0.8]
     p: 0.3
 
@@ -77,6 +134,7 @@ paths:
     checkpoint_subdir: checkpoints
     visualization_subdir: visualizations
     test_results_subdir: test_results
+
 
 visualization:
   show_masks: true

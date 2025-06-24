@@ -7,12 +7,17 @@ from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
 from codeBase.config.logging_setup import setup_logger, load_config
 from codeBase.data.DataPreprocessor import DataPreprocessor
-from codeBase.models.UNetResNet34Model import UNetResNet34Model
 from codeBase.models.mask2former_model import Mask2FormerModel
 from codeBase.visualisation.visualizer import Visualizer
-from codeBase.data.satelite_dataset import SatelliteDataset
+from codeBase.data.satelite_dataset import SatelliteDataset, FlairDataset, DLRDataset
 from datetime import datetime
 from accelerate import Accelerator
+
+DATASET_REGISTRY = {
+    "satellite": SatelliteDataset,
+    "flair": FlairDataset,
+    "dlr": DLRDataset
+}
 
 class SegmentationPipeline:
     """
@@ -26,35 +31,42 @@ class SegmentationPipeline:
         torch.manual_seed(42)
         np.random.seed(42)
 
-        self.model_type = self.config["model"].get("type", "mask2former").lower()
-        self.model_paths = self.config["paths"].get(self.model_type, {})
-        if not self.model_paths:
-            raise ValueError(f"No paths defined for model type: {self.model_type}")
+        self.dataset_name = self.config["data"]["dataset_name"]
+        self.label_type = self.config["data"].get("label_type", "dense")
 
-        base_output_dir = self.model_paths.get("base_output_dir")
-        run_name = self.model_paths.get("run_name") or datetime.now().strftime("%Y%m%d_%H%M%S")
+        self.class_names = self.config["model"]["classes_names"].get(self.dataset_name, {}).get(self.label_type)
+        if self.class_names is None:
+            raise ValueError(
+                f"Class names not found in config for dataset '{self.dataset_name}' with label type '{self.label_type}'")
+
+        self.DatasetClass = DATASET_REGISTRY.get(self.dataset_name, SatelliteDataset)
 
         self.image_dir: str = self.config["data"]["images_dir"]
         self.mask_dir: str = self.config["data"]["masks_dir"]
         self.patch_size: int = int(self.config["data"]["patch_size"])
         self.batch_size: int = int(self.config["data"]["batch_size"])
-        self.num_classes: int = int(self.config["data"]["num_classes"])
+        self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.num_classes: int = int(self.config["model"]["num_classes"])
         self.epochs: int = int(self.config["model"]["epochs"])
         self.learning_rate: float = float(self.config["model"]["learning_rate"])
-        self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
+        self.num_workers: int = int(self.config["model"]["num_workers"])
+        self.pin_memory: bool = bool(self.config["model"]["pin_memory"])
 
+
+        base_output_dir = self.config["paths"]["base_output_dir"]
+        run_name = self.config["paths"].get("run_name", datetime.now().strftime("%Y%m%d_%H%M%S"))
         self.run_dir = os.path.join(base_output_dir, run_name)
-        self.model_save_dir = os.path.join(self.run_dir, self.model_paths["checkpoint_subdir"])
-        self.visualization_dir = os.path.join(self.run_dir, self.model_paths["visualization_subdir"])
-        self.logs_dir = os.path.join(self.run_dir, self.model_paths["logs_subdir"])
-        self.tensorboard_dir = os.path.join(self.run_dir, self.model_paths["tensorboard_subdir"])
+
+        self.model_save_dir = os.path.join(self.run_dir, self.config["paths"]["checkpoint_subdir"])
+        self.visualization_dir = os.path.join(self.run_dir, self.config["paths"]["visualization_subdir"])
+        self.logs_dir = os.path.join(self.run_dir, self.config["paths"]["logs_subdir"])
+        self.tensorboard_dir = os.path.join(self.run_dir, self.config["paths"]["tensorboard_subdir"])
 
         #self.device: torch.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         self.accelerator = Accelerator(mixed_precision="fp16" if self.config["training"]["amp"] else "no")
-
+        self.logger = setup_logger(__name__)
         self.device = self.accelerator.device
-
-        print(f"Using device: {self.device}")
+        self.logger.info(f"Using device: {self.device}")
 
         for dir_path in [self.run_dir, self.model_save_dir, self.visualization_dir, self.logs_dir,
                          self.tensorboard_dir]:
@@ -62,8 +74,6 @@ class SegmentationPipeline:
 
         self.logger = setup_logger(__name__)
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
-        self.logger.info(f"Initialized pipeline for model: {self.model_type.upper()}")
-        self.logger.info(f"Output path: {self.run_dir}")
     def build_augmentation_pipeline(self) -> A.Compose:
         """
         Builds the Albumentations data augmentation pipeline based on configuration.
@@ -95,12 +105,13 @@ class SegmentationPipeline:
                     p=crop["p"]
                 )
             )
-        transforms_list.append(A.Normalize(mean=[0.485, 0.456, 0.406],
-                                           std=[0.229, 0.224, 0.225]))
+        transforms_list.append(
+            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        )
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
 
-    def prepare_data(self) -> Tuple[DataLoader[Any], DataLoader[Any], Any, Any, DataPreprocessor, Any]:
+    def prepare_data(self) -> Tuple[DataLoader, DataLoader, List[np.ndarray], List[np.ndarray], DataPreprocessor]:
         """
         Loads and patchifies data, applies augmentations if configured, and prepares PyTorch DataLoaders.
 
@@ -124,10 +135,25 @@ class SegmentationPipeline:
 
         debug = self.config["data"].get("debug", False)
         debug_limit = self.config["data"].get("debug_limit", None) if debug else None
-        train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
-            train_split=self.config["data"]["train_split"],
-            debug_limit=debug_limit
-        )
+        if self.dataset_name == "flair":
+            train_csv = self.config["data"]["train_csv"]
+            val_csv = self.config["data"]["val_csv"]
+            base_dir = self.config["data"].get("base_dir", None)
+
+            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+                rgb_to_class=FlairDataset.rgb_to_class,
+                use_csv=True,
+                train_csv_path=train_csv,
+                val_csv_path=val_csv,
+                base_dir=base_dir,
+                debug_limit=self.config["data"].get("debug_limit")
+            )
+        else:
+            train_imgs, train_masks, val_imgs, val_masks = preprocessor.prepare_data(
+                rgb_to_class=DLRDataset.rgb_to_class,
+                train_split=self.config["data"]["train_split"],
+                debug_limit=debug_limit
+            )
 
         # Apply augmentations to full images (optional, before patchifying)
         if self.config.get("augmentation"):
@@ -137,6 +163,7 @@ class SegmentationPipeline:
                 augmented = train_transform(image=img, mask=mask)
                 augmented_imgs.append(augmented["image"])
                 augmented_masks.append(augmented["mask"])
+            self.logger.info(f"Augmented {len(train_imgs)} training images using Albumentations.")
             train_imgs, train_masks = augmented_imgs, augmented_masks
         else:
             train_transform = A.Compose([
@@ -166,29 +193,33 @@ class SegmentationPipeline:
         train_img_patches, train_mask_patches = patchify_batch(train_imgs, train_masks)
         val_img_patches, val_mask_patches = patchify_batch(val_imgs, val_masks)
 
-        # Wrap into PyTorch datasets
-        train_dataset = SatelliteDataset(train_img_patches, train_mask_patches,transform=train_transform)
-        val_dataset = SatelliteDataset(val_img_patches, val_mask_patches, transform=val_transform)
+        train_dataset = self.DatasetClass(train_img_patches, train_mask_patches, transform=train_transform)
+        val_dataset = self.DatasetClass(val_img_patches, val_mask_patches, transform=val_transform)
 
         # Create DataLoaders with collate_fn
         train_loader = DataLoader(
             train_dataset,
             batch_size=self.batch_size,
             shuffle=True,
-            collate_fn=SatelliteDataset.collate_fn
+            collate_fn=SatelliteDataset.collate_fn,
+            num_workers = self.num_workers,
+            pin_memory = self.pin_memory
         )
         val_loader = DataLoader(
             val_dataset,
             batch_size=self.batch_size,
             shuffle=False,
-            collate_fn=SatelliteDataset.collate_fn
+            collate_fn=SatelliteDataset.collate_fn,
+            num_workers = self.num_workers,
+            pin_memory = self.pin_memory
         )
 
         self.logger.info(f"Patchified into {len(train_dataset)} training and {len(val_dataset)} validation patches.")
         return train_loader, val_loader, val_imgs, val_masks, preprocessor
 
 
-    def train(self, train_loader: DataLoader, val_loader: DataLoader):
+
+    def train(self, train_loader: DataLoader, val_loader: DataLoader) -> Mask2FormerModel:
         """
         Initializes and trains the segmentation model.
 
@@ -221,14 +252,13 @@ class SegmentationPipeline:
             val_loader=val_loader,
             epochs=self.epochs,
             lr=self.learning_rate,
-            #device=self.device,
+            device=self.device,
             tensorboard_writer=self.writer,
         )
 
         model_path: str = os.path.join(self.model_save_dir, "trained_model.pth")
         torch.save(self.accelerator.unwrap_model(trained_model).state_dict(), model_path)
         self.logger.info(f"Model saved to {model_path}")
-
         return segmenter
 
     def evaluate(self, segmenter, val_loader: DataLoader) -> None:
@@ -249,7 +279,8 @@ class SegmentationPipeline:
             val_imgs: List[np.ndarray],
             val_masks: List[np.ndarray],
             preprocessor: DataPreprocessor,
-            prefix: str = "prediction"
+            prefix: str = "prediction",
+            max_samples: int = 3
     ) -> None:
         """
         Visualizes predictions by reconstructing full images from predicted patches.
@@ -263,7 +294,7 @@ class SegmentationPipeline:
         """
         self.logger.info(f"Generating visualizations with prefix '{prefix}'")
 
-        for i in range(min(3, len(val_imgs))):
+        for i in range(min(max_samples, len(val_imgs))):
             try:
                 img = val_imgs[i]
                 gt_mask = val_masks[i]
@@ -305,13 +336,15 @@ class SegmentationPipeline:
         self.logger.info("Visualization process completed.")
 
     def run(self) -> None:
-        """Executes the full training and evaluation workflow."""
-        train_loader, val_loader, val_imgs, val_masks, preprocessor = self.prepare_data()
-        segmenter = self.train(train_loader, val_loader)
-        self.evaluate(segmenter, val_loader)
-        self.visualize(segmenter, val_imgs, val_masks, preprocessor, prefix="trained")
-        self.writer.close()
-        self.logger.info("Workflow completed.")
+        try:
+            train_loader, val_loader, val_imgs, val_masks, preprocessor = self.prepare_data()
+            segmenter = self.train(train_loader, val_loader)
+            self.evaluate(segmenter, val_loader)
+            self.visualize(segmenter, val_imgs, val_masks, preprocessor, prefix="trained")
+        finally:
+            self.writer.close()
+            self.logger.info("Workflow completed.")
+
 
 if __name__ == "__main__":
     pipeline = SegmentationPipeline()
