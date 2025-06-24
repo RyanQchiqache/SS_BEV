@@ -5,8 +5,6 @@ import albumentations as A
 from typing import List, Tuple,Any
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-
-from codeBase.app.visualisation_App import preprocessor
 from codeBase.config.logging_setup import setup_logger, load_config
 from codeBase.data.DataPreprocessor import DataPreprocessor
 from codeBase.models.UNetResNet34Model import UNetResNet34Model
@@ -37,6 +35,8 @@ class SegmentationPipeline:
 
         self.dataset_name = self.config["data"]["dataset_name"]
         self.label_type = self.config["data"].get("label_type", "dense")
+        self.patch_size: int = int(self.config["data"]["patch_size"])
+        self.batch_size: int = int(self.config["data"]["batch_size"])
 
         dataset_classes = self.config["model"]["classes_names"].get(self.dataset_name)
         if not AcceleratorState._shared_state:
@@ -60,8 +60,7 @@ class SegmentationPipeline:
             self.mask_dir: str = self.config["data"]["masks_dir"]
         else:
             self.image_dir, self.mask_dir = None, None
-        self.patch_size: int = int(self.config["data"]["patch_size"])
-        self.batch_size: int = int(self.config["data"]["batch_size"])
+
         self.pretrained_weights: str = self.config["model"]["pretrained_weights"]
         self.num_classes: int = int(self.config["model"]["num_classes"])
         self.epochs: int = int(self.config["model"]["epochs"])
@@ -90,6 +89,7 @@ class SegmentationPipeline:
                          self.tensorboard_dir]:
             os.makedirs(dir_path, exist_ok=True)
         self.writer = SummaryWriter(log_dir=self.tensorboard_dir)
+
     def build_augmentation_pipeline(self) -> A.Compose:
         """
         Builds the Albumentations data augmentation pipeline based on configuration.
@@ -122,7 +122,7 @@ class SegmentationPipeline:
                 )
             )
         transforms_list.append(
-            A.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            A.Normalize(mean=self.config["model"]["mean"], std=self.config["model"]["std"])
         )
 
         return A.Compose(transforms_list, additional_targets={"mask": "mask"})
@@ -195,14 +195,13 @@ class SegmentationPipeline:
             train_imgs, train_masks = augmented_imgs, augmented_masks
         else:
             train_transform = A.Compose([
-                A.Normalize(mean=[0.485, 0.456, 0.406],
-                            std=[0.229, 0.224, 0.225])
+                A.Normalize(mean=self.config["model"]["mean"], std=self.config["model"]["std"])
             ], additional_targets={"mask": "mask"})
 
         val_transform = A.Compose([
-            A.Normalize(mean=[0.485, 0.456, 0.406],
-                        std=[0.229, 0.224, 0.225])
+            A.Normalize(mean=self.config["model"]["mean"], std=self.config["model"]["std"])
         ], additional_targets={"mask": "mask"})
+
         self.logger.info(f"Train transform: {train_transform}")
         self.logger.info(f"Validation transform: {val_transform}")
 

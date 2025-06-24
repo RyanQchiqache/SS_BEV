@@ -152,7 +152,7 @@ class DataPreprocessor:
 
         def load_csv(csv_path: str):
             with open(csv_path, newline='') as f:
-                reader = csv.reader(f, delimiter=',')  # ✅ Fixed: use comma-separated parsing
+                reader = csv.reader(f, delimiter=',')
                 lines = [row for row in reader if len(row) == 2]
             return lines
 
