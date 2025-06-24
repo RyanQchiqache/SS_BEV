@@ -1,8 +1,8 @@
 import json
 import pytest
 from pathlib import Path
-from SS_BeV.codeBase.st_main import SegmentationPipeline
-from SS_BeV.codeBase.config import logging_setup  # Adjust if needed
+from codeBase.st_main import SegmentationPipeline
+from codeBase.config import logging_setup  # Adjust if needed
 import numpy as np
 from PIL import Image
 

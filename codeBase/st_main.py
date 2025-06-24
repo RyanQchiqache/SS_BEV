@@ -5,12 +5,12 @@ import albumentations as A
 from typing import List, Tuple,Any
 from torch.utils.data import DataLoader
 from torch.utils.tensorboard import SummaryWriter
-from SS_BeV.codeBase.config.logging_setup import setup_logger, load_config
-from SS_BeV.codeBase.data.DataPreprocessor import DataPreprocessor
-from SS_BeV.codeBase.models.UNetResNet34Model import UNetResNet34Model
-from SS_BeV.codeBase.models.mask2former_model import Mask2FormerModel
-from SS_BeV.codeBase.visualisation.visualizer import Visualizer
-from SS_BeV.codeBase.data.satelite_dataset import SatelliteDataset
+from codeBase.config.logging_setup import setup_logger, load_config
+from codeBase.data.DataPreprocessor import DataPreprocessor
+from codeBase.models.UNetResNet34Model import UNetResNet34Model
+from codeBase.models.mask2former_model import Mask2FormerModel
+from codeBase.visualisation.visualizer import Visualizer
+from codeBase.data.satelite_dataset import SatelliteDataset
 from datetime import datetime
 from accelerate import Accelerator
 
